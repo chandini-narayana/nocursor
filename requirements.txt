@@ -1,0 +1,10 @@
+# Runtime dependencies (also declared in pyproject.toml)
+# Use opencv-python (not -headless): the preview window needs OpenCV's GUI support.
+opencv-python>=4.8
+mediapipe>=0.10.14
+numpy>=1.26
+pyautogui>=0.9.54
+
+# Development
+pytest>=8
+ruff>=0.5

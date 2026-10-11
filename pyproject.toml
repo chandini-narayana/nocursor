@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nocursor"
+version = "0.1.0"
+description = "Control your desktop cursor with hand gestures captured by a webcam."
+requires-python = ">=3.10"
+dependencies = [
+    "opencv-python>=4.8",
+    "mediapipe>=0.10.14",
+    "numpy>=1.26",
+    "pyautogui>=0.9.54",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.5"]
+
+[project.scripts]
+nocursor = "nocursor.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM"]
