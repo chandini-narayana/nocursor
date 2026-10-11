@@ -40,12 +40,33 @@ class TrackingMonitor:
         self._min_hand_size = max(min_hand_size, _MIN_USABLE_HAND_SIZE)
         self._stable_frames = stable_frames
         self._good_streak = 0
+        self._last_reason: str | None = None
+
+    @property
+    def stable_frames(self) -> int:
+        return self._stable_frames
+
+    @property
+    def good_streak(self) -> int:
+        """Consecutive trustworthy frames so far (diagnostics)."""
+        return self._good_streak
+
+    @property
+    def last_reason(self) -> str | None:
+        """Why the latest frame was not trusted (None if it was, or no hand). Diagnostics only."""
+        return self._last_reason
+
+    def reset(self) -> None:
+        """Forget the stability streak; tracking must be re-established from scratch."""
+        self._good_streak = 0
 
     def update(self, observation: HandObservation | None) -> TrackingState:
+        self._last_reason = None
         if observation is None:
             self._good_streak = 0
             return TrackingState.LOST
-        if not self._is_trustworthy(observation):
+        self._last_reason = self._untrusted_reason(observation)
+        if self._last_reason is not None:
             self._good_streak = 0
             return TrackingState.UNCERTAIN
         self._good_streak += 1
@@ -53,12 +74,15 @@ class TrackingMonitor:
             return TrackingState.ACQUIRING
         return TrackingState.TRACKING
 
-    def _is_trustworthy(self, observation: HandObservation) -> bool:
+    def _untrusted_reason(self, observation: HandObservation) -> str | None:
+        """None if the frame is trustworthy, otherwise the first failed check."""
         xy = observation.landmarks[:, :2]
         if not np.all(np.isfinite(observation.landmarks)):
-            return False
+            return "non-finite landmarks"
         if observation.confidence < self._min_confidence:
-            return False
+            return f"confidence {observation.confidence:.2f} < {self._min_confidence:.2f}"
         if np.any(xy < 0.0) or np.any(xy > 1.0):
-            return False
-        return observation.hand_size >= self._min_hand_size
+            return "a landmark is outside the camera frame (hand partly out of view)"
+        if observation.hand_size < self._min_hand_size:
+            return f"hand too small ({observation.hand_size:.3f} < {self._min_hand_size:.3f})"
+        return None

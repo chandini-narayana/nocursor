@@ -193,29 +193,39 @@ class TestRearmingAfterTrackingLoss:
 
 
 class TestDepthAwareRatio:
+    """The 3D ratio is EXPERIMENTAL and opt-in (``use_depth=True`` / ``--pinch-depth``)."""
+
+    def test_two_dimensional_ratio_is_the_default_and_ignores_depth(self):
+        hand = make_hand(pinch_ratio=0.0, thumb_dz=0.1)
+        assert pinch_ratio(hand) == pytest.approx(0.0)
+        assert pinch_ratio(hand) == pinch_ratio(hand, use_depth=False)
+
     def test_matches_2d_ratio_when_there_is_no_depth_difference(self):
         hand = make_hand(pinch_ratio=0.4, aspect_ratio=16 / 9)
         assert pinch_ratio(hand) == pytest.approx(0.4)
+        assert pinch_ratio(hand, use_depth=True) == pytest.approx(0.4)
 
-    def test_depth_gap_increases_the_ratio(self):
-        flat = pinch_ratio(make_hand(pinch_ratio=0.0))
-        deep = pinch_ratio(make_hand(pinch_ratio=0.0, thumb_dz=0.1))
+    def test_depth_gap_increases_the_ratio_when_depth_is_enabled(self):
+        flat = pinch_ratio(make_hand(pinch_ratio=0.0), use_depth=True)
+        deep = pinch_ratio(make_hand(pinch_ratio=0.0, thumb_dz=0.1), use_depth=True)
         assert flat == pytest.approx(0.0)
         assert deep == pytest.approx(0.5)  # 0.1 / hand size 0.2
 
     def test_depth_is_aspect_corrected_like_x(self):
         hand = make_hand(pinch_ratio=0.0, thumb_dz=0.1, aspect_ratio=2.0)
-        assert pinch_ratio(hand) == pytest.approx(1.0)  # 0.1 * 2 / 0.2
+        assert pinch_ratio(hand, use_depth=True) == pytest.approx(1.0)  # 0.1 * 2 / 0.2
 
-    def test_degenerate_hand_is_never_a_pinch(self):
+    @pytest.mark.parametrize("use_depth", [False, True])
+    def test_degenerate_hand_is_never_a_pinch(self, use_depth):
         hand = make_hand(hand_size=0.0)
-        assert pinch_ratio(hand) == math.inf
+        assert pinch_ratio(hand, use_depth=use_depth) == math.inf
         d = default_detector(confirm_frames=1)
         d.update(OPEN, 0.0)
-        assert not d.update(pinch_ratio(hand), 0.1).clicked
+        assert not d.update(pinch_ratio(hand, use_depth=use_depth), 0.1).clicked
 
-    def test_thumb_overlapping_index_in_the_image_but_far_in_depth_is_not_a_pinch(self):
-        proc = GestureProcessor(Config(smoothing=0.0, stable_frames=1), (1920, 1080))
+    def test_with_depth_enabled_overlapping_tips_far_apart_in_depth_are_not_a_pinch(self):
+        cfg = Config(smoothing=0.0, stable_frames=1, pinch_use_depth=True)
+        proc = GestureProcessor(cfg, (1920, 1080))
         results = [proc.process(make_hand(pinch_ratio=OPEN), 0.0)]
         for i in range(1, 60):
             hand = make_hand(pinch_ratio=0.0, thumb_dz=0.08)  # 3D ratio ~0.4
@@ -223,8 +233,18 @@ class TestDepthAwareRatio:
         assert not any(r.click for r in results)
         assert results[-1].cursor is not None  # not frozen either: 0.4 is above the release level
 
-    def test_real_pinch_with_touching_tips_still_clicks(self):
+    def test_by_default_the_same_overlapping_tips_are_a_pinch(self):
+        """The accepted trade-off of the 2D default: depth is not consulted."""
         proc = GestureProcessor(Config(smoothing=0.0, stable_frames=1), (1920, 1080))
+        results = [proc.process(make_hand(pinch_ratio=OPEN), 0.0)]
+        for i in range(1, 12):
+            results.append(proc.process(make_hand(pinch_ratio=0.0, thumb_dz=0.08), i * DT))
+        assert sum(r.click for r in results) == 1
+
+    @pytest.mark.parametrize("use_depth", [False, True])
+    def test_real_pinch_with_touching_tips_clicks_in_both_modes(self, use_depth):
+        cfg = Config(smoothing=0.0, stable_frames=1, pinch_use_depth=use_depth)
+        proc = GestureProcessor(cfg, (1920, 1080))
         proc.process(make_hand(pinch_ratio=OPEN), 0.0)
         results = [proc.process(make_hand(pinch_ratio=0.05, thumb_dz=0.005), (i + 1) * DT)
                    for i in range(8)]

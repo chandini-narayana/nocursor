@@ -52,8 +52,16 @@ class FakeTracker:
 
 
 class FakeBackend:
+    """Records desktop input. ``clicks`` counts completed press+release pairs (Phase 1's
+    meaning of a click), since a pinch is now a mouse-down followed by a mouse-up."""
+
     def __init__(self):
-        self.moves, self.clicks = [], 0
+        self.moves, self.downs, self.ups, self.scrolls = [], 0, 0, []
+        self.direct_clicks = 0
+
+    @property
+    def clicks(self):
+        return self.ups
 
     def screen_size(self):
         return (1920, 1080)
@@ -62,7 +70,16 @@ class FakeBackend:
         self.moves.append((x, y))
 
     def click(self):
-        self.clicks += 1
+        self.direct_clicks += 1
+
+    def mouse_down(self):
+        self.downs += 1
+
+    def mouse_up(self):
+        self.ups += 1
+
+    def scroll(self, clicks):
+        self.scrolls.append(clicks)
 
 
 class QuitAfter(NullPreview):
@@ -83,6 +100,7 @@ class QuitAfter(NullPreview):
 def build(script, *, dry_run=False, frames=None, preview_frames=100, trigger_stop_at=None,
           capture=None, **cfg):
     config = Config(**{"smoothing": 0.0, "stable_frames": 1, "pinch_confirm_frames": 1,
+                       "pinch_release_frames": 1,  # Phase 1 equivalent: release at once
                        "click_cooldown_s": 0.0, "active_margin": 0.0, "max_read_failures": 3,
                        **cfg})
     stop, backend = EmergencyStop(), FakeBackend()

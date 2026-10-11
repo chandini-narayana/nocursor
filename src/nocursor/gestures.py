@@ -9,17 +9,29 @@ from enum import Enum
 from nocursor.models import INDEX_TIP, MIDDLE_MCP, THUMB_TIP, WRIST, HandObservation
 
 
-def pinch_ratio(observation: HandObservation) -> float:
-    """Thumb-tip to index-tip distance divided by hand size, both measured in 3D.
+def pinch_ratio(observation: HandObservation, use_depth: bool = False) -> float:
+    """Thumb-tip to index-tip distance divided by hand size (wrist to middle knuckle).
 
-    Using depth means fingertips that merely overlap in the image (thumb passing
-    in front of or behind the index finger) do not look like a pinch. A degenerate
+    The default is the image-plane (2D) ratio: on real webcams MediaPipe's depth (z)
+    estimate disagrees between the two fingertips by enough to keep touching fingers
+    above the pinch threshold. ``use_depth=True`` is the experimental 3D ratio, which
+    additionally rejects fingertips that merely overlap in the image. A degenerate
     zero-size hand yields ``inf``, which the detector treats as "not a pinch".
     """
-    size = observation.distance_3d(WRIST, MIDDLE_MCP)
+    if use_depth:
+        size = observation.distance_3d(WRIST, MIDDLE_MCP)
+        if size <= 0.0:
+            return math.inf
+        return observation.distance_3d(THUMB_TIP, INDEX_TIP) / size
+    return pinch_ratio_2d(observation)
+
+
+def pinch_ratio_2d(observation: HandObservation) -> float:
+    """The image-plane thumb-index ratio (ignores MediaPipe's z estimate)."""
+    size = observation.hand_size
     if size <= 0.0:
         return math.inf
-    return observation.distance_3d(THUMB_TIP, INDEX_TIP) / size
+    return observation.distance(THUMB_TIP, INDEX_TIP) / size
 
 
 class PinchState(Enum):
@@ -32,8 +44,25 @@ class PinchState(Enum):
 @dataclass(frozen=True)
 class PinchResult:
     state: PinchState
-    clicked: bool  # True on exactly one frame per accepted pinch
+    clicked: bool  # True on exactly one frame per accepted pinch (the confirmed pinch-down)
     freeze_cursor: bool  # True while fingers are close, so the click lands on target
+    held: bool = False  # a confirmed pinch is active, whether or not the cooldown accepted it
+    released: bool = False  # True on exactly one frame, when an active pinch is confirmed ended
+
+
+@dataclass(frozen=True)
+class PinchSnapshot:
+    """Read-only view of the detector's internal state, for diagnostics only."""
+
+    armed: bool  # False: an open hand (ratio >= release) must be seen before a pinch counts
+    pinched: bool
+    candidate_frames: int  # consecutive frames at/below the activation threshold so far
+    confirm_frames: int
+    open_frames: int  # consecutive open frames toward confirming a release
+    release_frames: int
+    engage: float
+    release: float
+    cooldown_remaining_s: float
 
 
 class PinchDetector:
@@ -46,7 +75,10 @@ class PinchDetector:
       ``ratio >= threshold * release_factor``.
     * ``confirm_frames``: consecutive frames at or below ``threshold`` needed
       before a pinch is accepted (at 30 fps, 5 frames is about 0.17 s).
-    * ``cooldown_s``: minimum time between two clicks.
+    * ``cooldown_s``: minimum time between two accepted pinches.
+    * ``release_frames``: consecutive frames at or above the release level
+      needed before an active pinch is confirmed ended. This stops a single
+      glitchy frame from dropping a drag. The default of 1 releases immediately.
 
     Anti-misfire measures:
     * Hysteresis: between ``threshold`` and the release level an existing pinch
@@ -67,7 +99,10 @@ class PinchDetector:
         release_factor: float = 1.5,
         confirm_frames: int = 5,
         cooldown_s: float = 0.4,
+        release_frames: int = 1,
     ) -> None:
+        if release_frames < 1:
+            raise ValueError("release_frames must be >= 1")
         if threshold <= 0:
             raise ValueError("threshold must be > 0")
         if release_factor <= 1:
@@ -80,6 +115,7 @@ class PinchDetector:
         self._release = threshold * release_factor
         self._confirm_frames = confirm_frames
         self._cooldown_s = cooldown_s
+        self._release_frames = release_frames
         self._last_click_time: float | None = None
         self.reset()
 
@@ -91,6 +127,24 @@ class PinchDetector:
         self._armed = False
         self._pinched = False
         self._candidate_frames = 0
+        self._open_frames = 0
+
+    def snapshot(self, now: float) -> PinchSnapshot:
+        """Current internal state. Pure read: calling it never changes behaviour."""
+        remaining = 0.0
+        if self._last_click_time is not None:
+            remaining = max(0.0, self._cooldown_s - (now - self._last_click_time))
+        return PinchSnapshot(
+            armed=self._armed,
+            pinched=self._pinched,
+            candidate_frames=self._candidate_frames,
+            confirm_frames=self._confirm_frames,
+            open_frames=self._open_frames,
+            release_frames=self._release_frames,
+            engage=self._engage,
+            release=self._release,
+            cooldown_remaining_s=remaining,
+        )
 
     def update(self, ratio: float, now: float) -> PinchResult:
         """Feed one frame's thumb-index distance / hand size and a monotonic time."""
@@ -105,11 +159,18 @@ class PinchDetector:
                 return PinchResult(PinchState.REOPEN, clicked=False, freeze_cursor=True)
             self._armed = True
 
+        released = False
         if self._pinched:
             if close:
-                return PinchResult(PinchState.PINCHED, clicked=False, freeze_cursor=True)
+                self._open_frames = 0
+                return PinchResult(PinchState.PINCHED, False, True, held=True)
+            self._open_frames += 1
+            if self._open_frames < self._release_frames:  # release not yet confirmed
+                return PinchResult(PinchState.PINCHED, False, True, held=True)
             self._pinched = False
+            self._open_frames = 0
             self._candidate_frames = 0
+            released = True
 
         if ratio <= self._engage:
             self._candidate_frames += 1
@@ -118,12 +179,12 @@ class PinchDetector:
                 clicked = self._cooldown_elapsed(now)
                 if clicked:
                     self._last_click_time = now
-                return PinchResult(PinchState.PINCHED, clicked=clicked, freeze_cursor=True)
+                return PinchResult(PinchState.PINCHED, clicked, True, held=True)
             return PinchResult(PinchState.CLOSING, clicked=False, freeze_cursor=True)
 
         self._candidate_frames = 0
         state = PinchState.CLOSING if close else PinchState.OPEN
-        return PinchResult(state, clicked=False, freeze_cursor=close)
+        return PinchResult(state, clicked=False, freeze_cursor=close, released=released)
 
     def _cooldown_elapsed(self, now: float) -> bool:
         return self._last_click_time is None or now - self._last_click_time >= self._cooldown_s

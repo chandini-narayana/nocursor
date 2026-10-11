@@ -6,5 +6,9 @@ __pycache__/
 models/*.task
 models/*.part
 
+# Machine-specific calibration (runtime data, never commit)
+calibration.local.json
+calibration.local.json.tmp
+
 # Local Claude Code instructions
 CLAUDE.md
