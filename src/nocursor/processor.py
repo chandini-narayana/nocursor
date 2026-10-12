@@ -40,6 +40,11 @@ class GestureFrame:
     pinch_ratio: float | None = None
     actions: tuple[Action, ...] = ()
     scroll_pose: bool = False
+    # Pinch candidate progress (frames so far, frames needed) while a pinch is still being
+    # confirmed; None otherwise. A candidate is not a click: nothing is pressed until it ends.
+    pinch_progress: tuple[int, int] | None = None
+    # Plain-words detail for tracking states: why a hand was rejected, or "n/m" while locking on.
+    tracking_note: str | None = None
 
     @property
     def cursor(self) -> tuple[int, int] | None:
@@ -115,6 +120,15 @@ class GestureProcessor:
         return self._machine.state
 
     @property
+    def depth_in_use(self) -> bool:
+        """True when the experimental 3D pinch ratio is active (False: the 2D default)."""
+        return self._use_depth
+
+    @property
+    def pinch_threshold(self) -> float:
+        return self._pinch.snapshot(0.0).engage
+
+    @property
     def holding_button(self) -> bool:
         """True while the state machine believes a mouse press is outstanding."""
         return self._machine.holding
@@ -158,7 +172,10 @@ class GestureProcessor:
                     now, tracking, observation, paused=paused, ratio=None, scroll_pose=False,
                     clicked=False,
                 )
-            return GestureFrame(tracking=tracking, state=self._machine.state, actions=actions)
+            return GestureFrame(
+                tracking=tracking, state=self._machine.state, actions=actions,
+                tracking_note=self._tracking_note(tracking),
+            )
 
         target = self._smoother.update(self._mapper.map(*observation.index_tip))
         ratio = pinch_ratio(observation, self._use_depth)
@@ -201,6 +218,10 @@ class GestureProcessor:
                 now, tracking, observation, paused=False, ratio=ratio, scroll_pose=scroll_pose,
                 clicked=pinch.clicked,
             )
+        snapshot = self._pinch.snapshot(now)  # read-only
+        progress = None
+        if snapshot.candidate_frames > 0 and not snapshot.pinched:
+            progress = (snapshot.candidate_frames, snapshot.confirm_frames)
         return GestureFrame(
             tracking=tracking,
             state=self._machine.state,
@@ -208,9 +229,17 @@ class GestureProcessor:
             pinch_ratio=ratio,
             actions=actions,
             scroll_pose=scroll_pose,
+            pinch_progress=progress,
         )
 
     # --------------------------------------------------------------- helpers
+    def _tracking_note(self, tracking: TrackingState) -> str | None:
+        if tracking is TrackingState.UNCERTAIN:
+            return self._monitor.last_reason
+        if tracking is TrackingState.ACQUIRING:
+            return f"{self._monitor.good_streak}/{self._monitor.stable_frames}"
+        return None
+
     def _diagnose(
         self,
         now: float,

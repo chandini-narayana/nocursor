@@ -147,6 +147,6 @@ class TestResolveModelPath:
         try:
             found = resolve_model_path(None)
         except ModelNotFoundError as exc:
-            assert "download_model.py" in str(exc)
+            assert "nocursor --download-model" in str(exc)
         else:  # a real model in the project's models/ folder is also acceptable
             assert isinstance(found, Path) and found.is_file()

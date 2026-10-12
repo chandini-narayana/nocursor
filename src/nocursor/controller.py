@@ -99,6 +99,52 @@ class PyAutoGUIBackend:
             raise FailSafeTriggered(str(exc)) from exc
 
 
+class InputBlocked(RuntimeError):
+    """An input method was called on a backend that is not allowed to send input."""
+
+
+class ScreenSizeOnlyBackend:
+    """A backend that can report a screen size and nothing else.
+
+    Benchmarks use it so that sending desktop input is impossible by construction, not merely
+    switched off: every input method raises ``InputBlocked`` (which the controller treats as a
+    fault and answers with the emergency stop). ``screen`` fixes the size for reproducibility;
+    without it the size is read from ``source`` (a real backend), which is read-only.
+    """
+
+    def __init__(
+        self, screen: tuple[int, int] | None = None, source: InputBackend | None = None
+    ) -> None:
+        if screen is None and source is None:
+            raise ValueError("give a fixed screen size or a source backend to read it from")
+        self._screen = screen
+        self._source = source
+
+    def screen_size(self) -> tuple[int, int]:
+        if self._screen is not None:
+            return self._screen
+        assert self._source is not None
+        return self._source.screen_size()
+
+    def _blocked(self, what: str) -> None:
+        raise InputBlocked(f"{what} is not allowed: this backend can only report the screen size")
+
+    def move_to(self, x: int, y: int) -> None:
+        self._blocked("move_to")
+
+    def click(self) -> None:
+        self._blocked("click")
+
+    def mouse_down(self) -> None:
+        self._blocked("mouse_down")
+
+    def mouse_up(self) -> None:
+        self._blocked("mouse_up")
+
+    def scroll(self, clicks: int) -> None:
+        self._blocked("scroll")
+
+
 @dataclass(frozen=True)
 class ActionRecord:
     """One discrete input event, kept so dry-run (and tests) can inspect intent."""
@@ -122,6 +168,7 @@ class SafeController:
       state is internal and never changes the real desktop's button state.
     * Once the emergency stop is set, nothing new is ever sent again.
     * ``inhibited`` (set while paused or calibrating) blocks new actions too.
+    * ``quiet=True`` moves the dry-run narration from INFO to DEBUG (used by benchmarks).
     * Any backend error trips the emergency stop rather than being retried.
     """
 
@@ -131,11 +178,13 @@ class SafeController:
         stop: EmergencyStop,
         enabled: bool = True,
         record_limit: int = 500,
+        quiet: bool = False,
     ) -> None:
         self._backend = backend
         self._stop = stop
         self._lock = threading.RLock()  # re-entrant: stop listeners fire inside _send
         self._enabled = enabled
+        self._quiet = quiet  # benchmarks: no console I/O inside the timed dispatch stage
         self._inhibited = False
         self._button_down = False
         self.fault_message: str | None = None
@@ -147,6 +196,7 @@ class SafeController:
         self.scrolls_sent = 0
         self.actions_suppressed = 0
         self.refused_button_events = 0
+        self.events_accepted = 0  # discrete events sent or simulated: press, release, scroll
         stop.add_listener(self._on_stop)
 
     # ------------------------------------------------------------------ state
@@ -199,15 +249,15 @@ class SafeController:
             if gate is not _Gate.SEND:
                 self.actions_suppressed += 1
                 if gate is _Gate.SIMULATE:
-                    logger.info("dry-run: click suppressed")
-                    self.records.append(ActionRecord("click", "single"))
+                    self._say("dry-run: click suppressed")
+                    self._log(ActionRecord("click", "single"))
                 return False
             if self._button_down:
                 return self._refuse("click while a button press is outstanding")
             if not self._send(self._backend.click):
                 return False
             self.clicks_sent += 1
-            self.records.append(ActionRecord("click", "single", sent=True))
+            self._log(ActionRecord("click", "single", sent=True))
             return True
 
     def mouse_down(self) -> bool:
@@ -221,14 +271,14 @@ class SafeController:
                 return self._refuse("mouse_down while a press is already outstanding")
             if gate is _Gate.SIMULATE:
                 self._button_down = True
-                self.records.append(ActionRecord("mouse_down"))
-                logger.info("dry-run: mouse_down (simulated, not sent)")
+                self._log(ActionRecord("mouse_down"))
+                self._say("dry-run: mouse_down (simulated, not sent)")
                 return False
             self._button_down = True  # assume pressed until proven otherwise
             if not self._send(self._backend.mouse_down):
                 return False  # _send tripped the stop; its listener releases the button
             self.mouse_downs_sent += 1
-            self.records.append(ActionRecord("mouse_down", sent=True))
+            self._log(ActionRecord("mouse_down", sent=True))
             return True
 
     def mouse_up(self, drag: bool = False) -> bool:
@@ -244,14 +294,14 @@ class SafeController:
             summary = "drag" if drag else "click"
             if not self._enabled:
                 self._button_down = False
-                self.records.append(ActionRecord("mouse_up"))
-                self.records.append(ActionRecord(summary, "mouse_down+mouse_up"))
-                logger.info("dry-run: mouse_up (simulated) -> would be a %s", summary)
+                self._log(ActionRecord("mouse_up"))
+                self._log(ActionRecord(summary, "mouse_down+mouse_up"))
+                self._say("dry-run: mouse_up (simulated) -> would be a %s", summary)
                 return False
             if not self._release_backend("mouse_up"):
                 return False
-            self.records.append(ActionRecord("mouse_up", sent=True))
-            self.records.append(ActionRecord(summary, "mouse_down+mouse_up", sent=True))
+            self._log(ActionRecord("mouse_up", sent=True))
+            self._log(ActionRecord(summary, "mouse_down+mouse_up", sent=True))
             return True
 
     def release_button(self, reason: str) -> bool:
@@ -261,12 +311,12 @@ class SafeController:
                 return True
             if not self._enabled:
                 self._button_down = False
-                self.records.append(ActionRecord("release", reason))
-                logger.info("dry-run: simulated button released (%s)", reason)
+                self._log(ActionRecord("release", reason))
+                self._say("dry-run: simulated button released (%s)", reason)
                 return True
             if not self._release_backend(reason):
                 return False
-            self.records.append(ActionRecord("release", reason, sent=True))
+            self._log(ActionRecord("release", reason, sent=True))
             logger.warning("released the left mouse button (%s)", reason)
             return True
 
@@ -279,18 +329,30 @@ class SafeController:
             if gate is not _Gate.SEND:
                 self.actions_suppressed += 1
                 if gate is _Gate.SIMULATE:
-                    self.records.append(ActionRecord("scroll", str(clicks)))
-                    logger.info("dry-run: scroll %+d suppressed", clicks)
+                    self._log(ActionRecord("scroll", str(clicks)))
+                    self._say("dry-run: scroll %+d suppressed", clicks)
                 return False
             if self._button_down:
                 return self._refuse("scroll while a button press is outstanding")
             if not self._send(lambda: self._backend.scroll(clicks)):
                 return False
             self.scrolls_sent += 1
-            self.records.append(ActionRecord("scroll", str(clicks), sent=True))
+            self._log(ActionRecord("scroll", str(clicks), sent=True))
             return True
 
     # --------------------------------------------------------------- internals
+    def _say(self, message: str, *args: object) -> None:
+        """Dry-run narration: INFO normally, DEBUG when ``quiet`` (so timing is not perturbed)."""
+        logger.log(logging.DEBUG if self._quiet else logging.INFO, message, *args)
+
+    def _log(self, record: ActionRecord) -> None:
+        self.records.append(record)
+        discrete = record.kind in ("mouse_down", "mouse_up", "scroll") or (
+            record.kind == "click" and record.detail == "single"
+        )
+        if discrete:
+            self.events_accepted += 1
+
     def _gate(self) -> _Gate:
         if self._stop.is_set() or self._inhibited:
             return _Gate.REFUSE

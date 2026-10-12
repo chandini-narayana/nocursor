@@ -80,13 +80,18 @@ class PauseControl:
 
     def set_paused(self, value: bool) -> None:
         with self._lock:
+            changed = self._paused != value
             self._paused = value
+        if changed:
+            logger.info("paused: no input will be sent" if value else "resumed")
 
     def toggle(self) -> bool:
         """Flip the flag and return the new value."""
         with self._lock:
             self._paused = not self._paused
-            return self._paused
+            value = self._paused
+        logger.info("paused: no input will be sent" if value else "resumed")
+        return value
 
 
 def parse_hotkey(spec: str) -> tuple[int, ...]:

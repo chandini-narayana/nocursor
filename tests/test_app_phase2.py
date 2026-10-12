@@ -136,6 +136,12 @@ class Run:
     wizard: CalibrationWizard | None
     store: CalibrationStore | None
     watchers: list[FakeWatcher] = field(default_factory=list)
+    clock: "FakeClock | None" = None
+
+    @property
+    def elapsed_s(self) -> float:
+        """Seconds of fake time the app has seen."""
+        return self.clock.now - 1000.0 if self.clock else 0.0
 
     def run(self) -> int:
         return self.app.run()
@@ -153,8 +159,10 @@ def build(
     frames=None,
     max_frames=None,
     reporter=None,
+    app_kwargs: dict[str, Any] | None = None,
     **cfg: Any,
 ) -> Run:
+    app_kwargs = app_kwargs or {}
     config = Config(**{"smoothing": 0.0, "stable_frames": 1, "active_margin": 0.0,
                        "click_cooldown_s": 0.0, "max_read_failures": 3, **cfg})
     stop, backend, pause = EmergencyStop(), OrderedBackend(), PauseControl()
@@ -165,14 +173,15 @@ def build(
     tracker = HookTracker(script, hooks)
     preview = ScriptedPreview(max_frames or len(script), commands)
     watchers = [FakeWatcher(), FakeWatcher()]
+    clock = FakeClock()
     app = NoCursorApp(
         camera, tracker, processor, controller, preview, stop, "ctrl+alt+q",
         watchers[0], pause=pause, wizard=wizard, store=store, extra_watchers=[watchers[1]],
-        clock=FakeClock(), start_in_calibration=start_in_calibration, message_seconds=1000.0,
-        diagnostics=reporter,
+        clock=clock, start_in_calibration=start_in_calibration, message_seconds=1000.0,
+        diagnostics=reporter, **app_kwargs,
     )  # fmt: skip
     return Run(app, backend, controller, processor, preview, capture, tracker, stop, pause,
-               wizard, store, watchers)
+               wizard, store, watchers, clock)
 
 
 ARM = [pointing()] * 3

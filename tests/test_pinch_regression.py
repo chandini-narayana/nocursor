@@ -512,10 +512,13 @@ class TestDiagnosticsReporter:
     def test_app_logs_diagnostics_rate_limited_and_in_dry_run_only_logs(self, caplog):
         script = [pointing(pinch_ratio=0.6)] * 300
         r = build(script, dry_run=True, diagnostics=True, reporter=DiagnosticsReporter())
-        with caplog.at_level(logging.INFO, logger="nocursor.app"):
+        with caplog.at_level(logging.DEBUG, logger="nocursor.diagnostics"):
             r.run()
         diag_lines = [m for m in caplog.messages if m.startswith("diag ")]
-        assert 1 <= len(diag_lines) <= 14  # ~10 s of frames, one line per second
+        # 300 frames, but at most one line per second of the app's clock
+        assert len(diag_lines) < 300 / 5
+        assert len(diag_lines) <= r.elapsed_s + 1  # never faster than one per second
+        assert len(diag_lines) >= r.elapsed_s / 1.2  # and not starved either
         assert r.backend.events == []
 
 
@@ -698,7 +701,7 @@ class TestDryRunInBothModes:
         script = [open_hand] * 4 + [pinched] * 8 + [open_hand] * 4
         r = build(script, dry_run=True, diagnostics=True, pinch_use_depth=use_depth,
                   reporter=DiagnosticsReporter())
-        with caplog.at_level(logging.INFO):
+        with caplog.at_level(logging.DEBUG, logger="nocursor.diagnostics"):
             r.run()
         kinds = [rec.kind for rec in r.controller.records]
         assert kinds == ["mouse_down", "mouse_up", "click"]

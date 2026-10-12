@@ -12,20 +12,28 @@ import numpy as np
 from nocursor.calibration import CalibrationError, CalibrationStore, CalibrationWizard, WizardState
 from nocursor.camera import Camera, CameraError
 from nocursor.controller import SafeController
-from nocursor.diagnostics import DiagnosticsReporter
+from nocursor.diagnostics import DiagnosticsReporter, mode_label
+from nocursor.dispatch import apply_actions
 from nocursor.emergency import EmergencyStop, PauseControl
-from nocursor.interaction import MouseDown, MouseUp, MoveTo, Scroll
+from nocursor.hud import StatusInfo, toast_text
+from nocursor.interaction import MouseDown, MouseUp, Scroll
 from nocursor.mapping import ViewRegion
 from nocursor.models import HandObservation
-from nocursor.preview import Preview, PreviewCommand, StatusInfo
+from nocursor.preview import Preview, PreviewCommand
 from nocursor.processor import GestureFrame, GestureProcessor
+from nocursor.profiling import NullProfiler
+from nocursor.resources import ResourceSampler
 from nocursor.tracking import TrackingState
 
 logger = logging.getLogger(__name__)
+diagnostics_logger = logging.getLogger("nocursor.diagnostics")  # DEBUG: --diagnostics / -v only
 
 EXIT_OK = 0
 EXIT_ERROR = 1
 EXIT_EMERGENCY = 2
+
+TOAST_SECONDS = 1.5
+PERF_REFRESH_FRAMES = 10  # the overlay's percentile summary is recomputed this often
 
 
 class Tracker(Protocol):
@@ -47,6 +55,10 @@ class NoCursorApp:
 
     ``run()`` always releases a held mouse button first, then the hotkey watchers,
     preview, tracker and camera, whatever caused the loop to end.
+
+    Optional timing (``profiler``, ``resources``) only reads clocks; with the default
+    ``NullProfiler`` it costs a few no-op calls per frame. ``time_limit_s`` ends the loop
+    cleanly (exit code 0) after that many seconds; the live benchmark uses it.
     """
 
     def __init__(
@@ -70,6 +82,10 @@ class NoCursorApp:
         start_in_calibration: bool = False,
         message_seconds: float = 4.0,
         diagnostics: DiagnosticsReporter | None = None,
+        profiler: NullProfiler | None = None,
+        resources: ResourceSampler | None = None,
+        show_perf: bool = False,
+        time_limit_s: float | None = None,
     ) -> None:
         self._camera = camera
         self._tracker = tracker
@@ -88,12 +104,36 @@ class NoCursorApp:
         self._start_in_calibration = start_in_calibration
         self._message_seconds = message_seconds
         self._message: tuple[str, float] | None = None
+        self._toast: tuple[str, float] | None = None
         self._diagnostics = diagnostics
         self._diagnostic_lines: tuple[str, ...] = ()
+        self._profiler = profiler if profiler is not None else NullProfiler()
+        self._resources = resources
+        self._show_perf = show_perf
+        self._perf_line: str | None = None
+        self._time_limit_s = time_limit_s
         self._aspect = 4 / 3
+        self._frame_size: tuple[int, int] | None = None
         self._fps = 0.0
 
     def run(self) -> int:
+        logger.info(
+            "control loop starting: %s, %s",
+            "LIVE" if self._controller.enabled else "DRY-RUN",
+            mode_label(self._processor.depth_in_use),
+            extra={"file_only": True},
+        )
+        code = self._run_guarded()
+        reason = self._stop.reason
+        logger.info(
+            "control loop ended: exit code %d%s",
+            code,
+            f", reason: {reason}" if reason else "",
+            extra={"file_only": True},
+        )
+        return code
+
+    def _run_guarded(self) -> int:
         try:
             for watcher in self._watchers:
                 watcher.start()
@@ -113,18 +153,33 @@ class NoCursorApp:
             self._shutdown()
         return EXIT_EMERGENCY if self._stop.is_set() else EXIT_OK
 
+    @property
+    def frame_size(self) -> tuple[int, int] | None:
+        """(width, height) of the latest camera frame, once one has arrived."""
+        return self._frame_size
+
     # ------------------------------------------------------------------ loop
     @property
     def _calibrating(self) -> bool:
         return self._wizard is not None and self._wizard.active
 
     def _loop(self) -> None:
+        profiler = self._profiler
         previous = self._clock()
+        deadline = None if self._time_limit_s is None else previous + self._time_limit_s
+        if self._resources is not None:
+            self._resources.start()
         if self._start_in_calibration:
             self._begin_calibration()
+        frame_count = 0
         while not self._stop.is_set():
+            profiler.begin_wait()
             frame = self._camera.read()
             now = self._clock()
+            if deadline is not None and now >= deadline:
+                logger.info("time limit reached")
+                break
+            profiler.frame_arrived(got_frame=frame is not None)
             self._update_fps(now - previous)
             previous = now
 
@@ -133,8 +188,14 @@ class NoCursorApp:
                 frame = np.zeros((480, 640, 3), dtype=np.uint8)
             else:
                 self._aspect = frame.shape[1] / frame.shape[0]
+                self._frame_size = (frame.shape[1], frame.shape[0])
+                started = profiler.mark()
                 observation = self._tracker.detect(frame, int(now * 1000))
+                profiler.record_since(
+                    "inference", started, "hand" if observation is not None else "no_hand"
+                )
 
+            started = profiler.mark()
             calibrating = self._calibrating
             self._controller.inhibited = calibrating or self._pause.paused
             if calibrating:
@@ -142,19 +203,39 @@ class NoCursorApp:
                 self._feed_wizard(gesture, observation)
             else:
                 gesture = self._processor.process(observation, now, paused=self._pause.paused)
+            profiler.record_since("gesture", started)
+            profiler.note_tracking(gesture.tracking.value)
 
-            self._report_diagnostics(now)  # read-only: shows/logs, never acts
-
+            started = profiler.mark()
+            acted = False
             if not self._stop.is_set():  # the hotkey may have fired during inference
                 self._reconcile(gesture)  # never act on top of a press the machine does not know
-                self._apply(gesture)
+                self._remember(apply_actions(self._controller, self._processor, gesture.actions))
+                acted = any(isinstance(a, MouseDown | MouseUp | Scroll) for a in gesture.actions)
             self._reconcile()
+            profiler.record_since("dispatch", started)
+            profiler.end_dispatch(had_actions=acted)  # latency ends here; display is not in it
 
+            self._report_diagnostics(now)  # read-only: shows/logs, never acts
+            frame_count += 1
+            if self._show_perf and profiler.enabled and frame_count % PERF_REFRESH_FRAMES == 1:
+                self._perf_line = profiler.overlay_line()
+
+            started = profiler.mark()
             keep_going = self._preview.show(frame, observation, gesture, self._status(gesture))
+            profiler.record_since("preview", started)
             if not keep_going:
                 self._stop.trigger("quit requested from preview window")
             for command in self._preview.take_commands():
                 self._handle_command(command)
+            if self._resources is not None:
+                self._resources.maybe_sample()
+
+    def _remember(self, events: tuple[str, ...]) -> None:
+        """Show the latest event the controller accepted (never one it only wanted)."""
+        if events:
+            simulated = not self._controller.enabled
+            self._toast = (toast_text(events[-1], simulated), self._clock() + TOAST_SECONDS)
 
     def _report_diagnostics(self, now: float) -> None:
         self._diagnostic_lines = ()
@@ -165,20 +246,7 @@ class NoCursorApp:
         self._diagnostic_lines = self._diagnostics.overlay_lines(diag)
         line = self._diagnostics.log_line(diag, now)  # at most one per interval
         if line is not None:
-            logger.info(line)
-
-    def _apply(self, gesture: GestureFrame) -> None:
-        for action in gesture.actions:
-            if isinstance(action, MoveTo):
-                self._controller.move_to(action.x, action.y)
-            elif isinstance(action, MouseDown):
-                self._controller.mouse_down()
-                if not self._controller.button_down:  # refused: never pretend it is pressed
-                    self._processor.abort_interaction()
-            elif isinstance(action, MouseUp):
-                self._controller.mouse_up(drag=action.drag)
-            elif isinstance(action, Scroll):
-                self._controller.scroll(action.clicks)
+            diagnostics_logger.debug(line)
 
     def _reconcile(self, pending: GestureFrame | None = None) -> None:
         """Invariant check: the controller never holds a button the state machine dropped.
@@ -218,6 +286,7 @@ class NoCursorApp:
         if self._wizard is None:
             self._notify("Calibration is not available in this session.")
         elif not self._calibrating:
+            logger.info("calibration started")
             self._wizard.start()  # next frame: controller inhibited, state machine releases
 
     def _feed_wizard(self, gesture: GestureFrame, observation: HandObservation | None) -> None:
@@ -277,9 +346,9 @@ class NoCursorApp:
             control = "PAUSED"
         else:
             control = "LIVE" if self._controller.enabled else "DRY-RUN"
-        message = None
-        if self._message is not None and self._clock() < self._message[1]:
-            message = self._message[0]
+        now = self._clock()
+        message = self._message[0] if self._message and now < self._message[1] else None
+        toast = self._toast[0] if self._toast and now < self._toast[1] else None
         region = self._processor.region
         return StatusInfo(
             control,
@@ -292,6 +361,11 @@ class NoCursorApp:
             calibration=self._wizard.view() if self._calibrating and self._wizard else None,
             pause_hotkey=self._pause_hotkey_label,
             diagnostics_lines=self._diagnostic_lines,
+            pinch_mode=mode_label(self._processor.depth_in_use),
+            pinch_threshold=self._processor.pinch_threshold,
+            perf_line=self._perf_line if self._show_perf else None,
+            toast=toast,
+            button_held=self._controller.button_down,
         )
 
     def _update_fps(self, dt: float) -> None:
@@ -326,3 +400,7 @@ class NoCursorApp:
                 logger.exception("error closing %s", name)
         if self._controller.fault_message:
             logger.error(self._controller.fault_message)
+        if self._show_perf and self._profiler.enabled:
+            summary = self._profiler.overlay_line()
+            if summary:
+                logger.info("performance (rolling window, software timings): %s", summary)

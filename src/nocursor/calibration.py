@@ -20,6 +20,7 @@ from enum import Enum
 from pathlib import Path
 
 from nocursor.mapping import ViewRegion
+from nocursor.paths import runtime_root
 
 logger = logging.getLogger(__name__)
 
@@ -86,8 +87,7 @@ def region_from_corners(points: Sequence[tuple[float, float]]) -> ViewRegion:
 # --------------------------------------------------------------- persistence
 def default_calibration_path() -> Path:
     """Local runtime file inside the project (or the working directory if not a checkout)."""
-    root = Path(__file__).resolve().parents[2]
-    return (root if (root / "pyproject.toml").is_file() else Path.cwd()) / DEFAULT_FILENAME
+    return runtime_root() / DEFAULT_FILENAME
 
 
 @dataclass(frozen=True)

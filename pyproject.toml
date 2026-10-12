@@ -6,10 +6,21 @@ build-backend = "setuptools.build_meta"
 name = "nocursor"
 version = "0.1.0"
 description = "Control your desktop cursor with hand gestures captured by a webcam."
+readme = "README.md"
 requires-python = ">=3.10"
+keywords = ["hand-tracking", "gesture-control", "mediapipe", "opencv", "computer-vision"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Win32 (MS Windows)",
+    "Intended Audience :: Developers",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Image Recognition",
+]
 dependencies = [
-    "opencv-python>=4.8",
-    "mediapipe>=0.10.14",
+    "opencv-contrib-python>=4.8",
+    "mediapipe>=1.1,<2",
     "numpy>=1.26",
     "pyautogui>=0.9.54",
 ]

@@ -1,7 +1,11 @@
-# Runtime dependencies (also declared in pyproject.toml)
-# Use opencv-python (not -headless): the preview window needs OpenCV's GUI support.
-opencv-python>=4.8
-mediapipe>=0.10.14
+# Runtime dependencies (also declared in pyproject.toml).
+# For an exactly reproducible set of versions use requirements-lock.txt instead.
+#
+# NoCursor needs exactly ONE OpenCV package: opencv-contrib-python. It is what MediaPipe itself
+# requires and it includes the window support the preview needs. Do not also install
+# opencv-python or any "-headless" OpenCV: they overwrite each other's `cv2`.
+opencv-contrib-python>=4.8
+mediapipe>=1.1,<2
 numpy>=1.26
 pyautogui>=0.9.54
 

@@ -10,5 +10,13 @@ models/*.part
 calibration.local.json
 calibration.local.json.tmp
 
+# Local runtime output: logs and benchmark reports (machine-specific)
+logs/
+benchmarks/
+
+# Build output
+build/
+dist/
+
 # Local Claude Code instructions
 CLAUDE.md

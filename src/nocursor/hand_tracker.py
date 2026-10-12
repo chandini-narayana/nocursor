@@ -8,12 +8,13 @@ from typing import Any
 
 import numpy as np
 
+from nocursor.logging_setup import capture_native_stderr, report_native_output
 from nocursor.models import NUM_LANDMARKS, HandObservation
 
 logger = logging.getLogger(__name__)
 
 MODEL_FILENAME = "hand_landmarker.task"
-DOWNLOAD_HINT = "python scripts/download_model.py"
+DOWNLOAD_HINT = "nocursor --download-model"
 
 
 class ModelNotFoundError(FileNotFoundError):
@@ -43,20 +44,31 @@ class HandTracker:
     """Detects a single hand per frame using the pretrained MediaPipe Hand Landmarker."""
 
     def __init__(self, model_path: Path, min_confidence: float = 0.6) -> None:
-        import mediapipe as mp
-        from mediapipe.tasks.python import BaseOptions, vision
+        error: Exception | None = None
+        with capture_native_stderr() as native:
+            try:
+                import mediapipe as mp
+                from mediapipe.tasks.python import BaseOptions, vision
 
-        self._mp = mp
-        options = vision.HandLandmarkerOptions(
-            # A buffer (not a path) avoids Windows path-encoding problems in MediaPipe.
-            base_options=BaseOptions(model_asset_buffer=model_path.read_bytes()),
-            running_mode=vision.RunningMode.VIDEO,
-            num_hands=1,
-            min_hand_detection_confidence=min_confidence,
-            min_hand_presence_confidence=min_confidence,
-            min_tracking_confidence=min_confidence,
-        )
-        self._landmarker: Any = vision.HandLandmarker.create_from_options(options)
+                self._mp = mp
+                options = vision.HandLandmarkerOptions(
+                    # A buffer (not a path) avoids Windows path-encoding problems in MediaPipe.
+                    base_options=BaseOptions(model_asset_buffer=model_path.read_bytes()),
+                    running_mode=vision.RunningMode.VIDEO,
+                    num_hands=1,
+                    min_hand_detection_confidence=min_confidence,
+                    min_hand_presence_confidence=min_confidence,
+                    min_tracking_confidence=min_confidence,
+                )
+                self._landmarker: Any = vision.HandLandmarker.create_from_options(options)
+            except Exception as exc:  # reported below, with whatever MediaPipe printed
+                error = exc
+        # MediaPipe's C++ layer prints routine notices (delegate creation, feedback tensors)
+        # while loading. They are kept for -v; anything that looks like an error, or any
+        # output at all when loading fails, is logged at WARNING / ERROR.
+        report_native_output(native.text, "MediaPipe model load", error is not None, logger)
+        if error is not None:
+            raise error
         self._last_timestamp_ms = -1
 
     def detect(self, frame_bgr: np.ndarray, timestamp_ms: int) -> HandObservation | None:

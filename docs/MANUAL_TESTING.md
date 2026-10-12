@@ -1,7 +1,9 @@
-# Manual Testing Checklist (Phase 1 + Phase 2)
+# Manual Hardware Testing Checklist
 
-> The file name is kept from Phase 1. Sections 0-5 are the Phase 1 checks (updated where
-> Phase 2 changed behaviour); sections 6-12 are new in Phase 2.
+> Sections 0-5 are the original core checks (updated where later phases changed behaviour),
+> 6-13 cover dragging, scrolling, calibration, pause and pinch diagnostics, and 14-17 cover the
+> interface, logging, benchmarks and installation. This file was formerly
+> `PHASE1_MANUAL_TESTING.md`.
 
 None of this has been performed by the assistant. It needs a real webcam, hand and desktop.
 Tick each item yourself. Run commands from the project folder.
@@ -26,11 +28,13 @@ a window's title bar for dragging. Do **not** practise dragging on files you car
 | Confirm calibration corner | `Space` or `Enter` |
 | Cancel calibration | `Backspace` or `X` |
 | Reset calibration | `R` in the preview, or `--reset-calibration` |
+| Controls help panel | `H` (or `?`) in the preview |
 | **Emergency stop** | `Ctrl+Alt+Q` anywhere, `Esc` or `Q` in the preview (always, in every mode), close the preview window, `Ctrl+C`, or push the physical mouse into a screen corner |
 
 ## 0. Setup
 - [ ] `.\.venv\Scripts\python -m pytest` passes and `.\.venv\Scripts\ruff check .` is clean.
-- [ ] `models\hand_landmarker.task` exists (otherwise `python scripts\download_model.py`).
+- [ ] `.\.venv\Scripts\python -m nocursor --check` ends with `Ready to run.`
+- [ ] `models\hand_landmarker.task` exists (otherwise `.\.venv\Scripts\python -m nocursor --download-model`).
 
 ## 1. Webcam + tracking (dry-run: no mouse input is ever sent)
 Run `.\.venv\Scripts\python -m nocursor --dry-run`.
@@ -90,7 +94,7 @@ A click is now a button **press** when the pinch is confirmed and a **release** 
 - [ ] Task Manager shows no leftover `python.exe` from NoCursor.
 - [ ] Unplug the webcam (or cover it with another app using it) while running: the app reports a camera error, exits, and never clicks.
 - [ ] Start with a wrong camera: `--camera 5` prints a clear "could not open camera" error and exits.
-- [ ] Start without the model (temporarily rename it): clear message pointing to `download_model.py`.
+- [ ] Start without the model (temporarily rename it): clear message pointing to `nocursor --download-model`.
 
 ---
 
@@ -225,5 +229,54 @@ Optional - experimental 3D mode, for comparison only:
 
 Please send me: the `diag` lines from any pinch attempt that fails, your camera and resolution, and the `lowest in 3s` values.
 
+## 14. Interface (HUD) feedback
+Run `.\.venv\Scripts\python -m nocursor --dry-run` and watch the top-left status panel. It should
+always say what is happening in plain words, and it must never say something happened that did not.
+- [ ] No hand: `NO HAND - show one hand to the camera`. Partly out of frame or far away: `HAND NOT USABLE - <reason>`.
+- [ ] Hand appears: `LOCKING ON (n/3)`, then `POINTING` in green.
+- [ ] Close thumb and index slowly: `PINCH PENDING 1/5 - not clicked yet` ... `4/5`, with orange fingertip rings. **No click is claimed during this.**
+- [ ] After 5 frames: `PRESSED - button held (simulated)` with red rings, and the toast `Button pressed (simulated)`.
+- [ ] Release: toast `Released: click (simulated)`. Drag: `DRAGGING - button held (simulated)`, then `Released: drag finished (simulated)`.
+- [ ] Second pinch right after the first: `PINCH IGNORED - release, then pinch again` (cooldown).
+- [ ] After tracking loss or `P`: `NOT ARMED - spread thumb and index apart`.
+- [ ] Peace sign: `SCROLL POSE - hold still to start scrolling` (a candidate), then `SCROLLING - move your hand up or down` (cyan skeleton).
+- [ ] `P`: `PAUSED - no input is sent. Press P to resume`. `C`: `CALIBRATING - corner n/4`. Stop key: `STOPPED - <reason>`.
+- [ ] The `Control:` line says `DRY-RUN (no input is sent)` here and `LIVE (mouse input is sent)` without `--dry-run`.
+- [ ] The pinch line names the active mode, e.g. `2D pinch ratio (default): 0.24  (pinch at <= 0.20)`; with `--pinch-depth` it says `3D pinch ratio (experimental)`.
+- [ ] `H` shows the controls panel; `H` again hides it; `Esc`/`Q` still stop while it is open.
+- [ ] `--show-perf` adds a `PERF ... fps | inference p50 ... | software e2e p50 ... / p95 ...` line after a few seconds, labelled as software timings.
+- [ ] Text stays readable over a bright and a dark background (the panel is darkened behind it).
+- [ ] In a live run (no `--dry-run`), the press and release toasts appear only when the click really lands. Block it deliberately if you can (run NoCursor inside an elevated window's focus) and confirm the HUD says `PRESS NOT SENT`, not `PRESSED`.
+
+## 15. Logging and error messages
+- [ ] A normal start prints a short banner and no raw MediaPipe lines (`INFO: Created TensorFlow Lite XNNPACK delegate`, `W0000 ...`).
+- [ ] `-v` shows them (as DEBUG lines starting `MediaPipe model load:`), plus logger names.
+- [ ] `--log-file` creates `logs
+ocursor.log`; without the flag no `logs` folder appears. The file contains start/end lines, pause/resume, stop reasons, and no video or landmark data. Your user name does not appear (your home folder shows as `~`).
+- [ ] `--diagnostics` shows `diag ...` lines about once per second in the console (and in the log file with `--log-file`); without it, none.
+- [ ] Rename the model file: the error tells you to run `nocursor --download-model`.
+- [ ] Unplug the camera / use `--camera 5`: a clear camera error, exit code 1, no traceback.
+- [ ] Replace the model with a junk file (keep a backup): the error says it may be corrupt and to run `nocursor --redownload-model`.
+- [ ] An invalid option (for example `--scroll-speed 500`) names the flag and the valid range, exit code 64.
+- [ ] `nocursor --check` reports problems in plain words (try it with the model renamed).
+
+## 16. Benchmarks (all dry-run: they cannot send input)
+Results from the three modes are never comparable with each other; each report says which it is.
+- [ ] **Synthetic** `nocursor --benchmark synthetic` finishes, prints a table, writes `benchmarks\synthetic-<time>.json`. The title says `not webcam performance`. Run it twice: the *shape* of the results repeats (timings vary a little).
+- [ ] **Video replay** with a short clip of your own hand: `nocursor --benchmark video --benchmark-video path	o\clip.mp4`. The report shows only the file name, `hand_present_frames`, and separate `inference_hand` / `inference_no_hand` rows.
+- [ ] **Live** `nocursor --benchmark live --benchmark-seconds 20`: a preview opens, you keep your hand in view and use gestures for 20 s.
+  - [ ] **Your real mouse never moves, presses or scrolls** during the run.
+  - [ ] `Esc`/`Q` ends it early; the report then says why in `ended_by`.
+  - [ ] The report lists `input_events_sent: 0`, `input_sent: false`, and some `input_events_simulated` if you pinched.
+  - [ ] Note fps, inference p50/p95, end-to-end p50/p95, tracking-loss events per minute, CPU and memory.
+- [ ] Every report states the measurement method and that it is not camera-to-display latency.
+- [ ] Do not publish any of these numbers without the mode, your camera, resolution and machine.
+
+## 17. Installation in a clean environment
+See the README, "Install into a clean environment".
+- [ ] `python -m venv`, `pip install -r requirements.txt`, `pip install -e . --no-deps` succeed.
+- [ ] `pip list` shows `opencv-contrib-python` and **not** `opencv-python`.
+- [ ] `nocursor --version`, `nocursor --check`, `nocursor --download-model` work; `nocursor --dry-run` opens the preview window (OpenCV window support is available).
+
 ## Record your findings
-Note: camera model, resolution, FPS seen, any misclicks, accidental drags or scrolls, stuck-button incidents, calibration issues, and which `--smoothing`, `--pinch-threshold`, `--drag-start`, `--scroll-speed` values felt right. Report them back before Phase 3.
+Note: camera model, resolution, FPS seen, any misclicks, accidental drags or scrolls, stuck-button incidents, calibration issues, and which `--smoothing`, `--pinch-threshold`, `--drag-start`, `--scroll-speed` values felt right. Report them back to the project owner.

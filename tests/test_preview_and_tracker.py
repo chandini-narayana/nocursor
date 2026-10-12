@@ -32,7 +32,7 @@ def test_real_model_loads_and_finds_no_hand_in_blank_frame():
     try:
         model = resolve_model_path(None)
     except ModelNotFoundError:
-        pytest.skip("hand_landmarker.task not downloaded (python scripts/download_model.py)")
+        pytest.skip("hand_landmarker.task not downloaded (nocursor --download-model)")
     from nocursor.hand_tracker import HandTracker
 
     tracker = HandTracker(model, min_confidence=0.6)

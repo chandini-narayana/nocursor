@@ -294,19 +294,40 @@ class TestPauseControlAndHotkeyAction:
             time.sleep(0.005)
         return predicate()
 
+    class PolledKeys:
+        """Key state that counts how often the watcher thread has read it."""
+
+        def __init__(self):
+            self.down: set[int] = set()
+            self.polls = 0
+
+        def __call__(self, vk):
+            self.polls += 1
+            return vk in self.down
+
+    def let_the_watcher_see_the_keys_up(self, keys):
+        """Wait until the polling thread has demonstrably read the released state.
+
+        A fixed sleep is not enough: on a loaded machine the thread can be starved for longer
+        than any sleep, never observe the keys up, and so never see the next press as a new one.
+        """
+        target = keys.polls + 8
+        assert self.wait_for(lambda: keys.polls >= target)
+
     def test_hotkey_action_fires_once_per_press(self):
-        down: set[int] = set()
+        keys = self.PolledKeys()
         calls: list[int] = []
-        action = HotkeyAction((1, 2), down.__contains__, lambda: calls.append(1), 0.001)
+        action = HotkeyAction((1, 2), keys, lambda: calls.append(1), 0.001)
         action.start()
         try:
-            down.update({1, 2})
+            keys.down.update({1, 2})
             assert self.wait_for(lambda: len(calls) == 1)
-            time.sleep(0.05)  # keys still held: must not repeat
+            held_until = keys.polls + 20  # keys still held across many polls: must not repeat
+            assert self.wait_for(lambda: keys.polls >= held_until)
             assert len(calls) == 1
-            down.clear()
-            time.sleep(0.02)
-            down.update({1, 2})
+            keys.down.clear()
+            self.let_the_watcher_see_the_keys_up(keys)
+            keys.down.update({1, 2})
             assert self.wait_for(lambda: len(calls) == 2)
         finally:
             action.close()
@@ -320,21 +341,21 @@ class TestPauseControlAndHotkeyAction:
         assert calls == []
 
     def test_hotkey_action_survives_an_action_exception(self):
-        down: set[int] = set()
+        keys = self.PolledKeys()
         calls: list[int] = []
 
         def flaky():
             calls.append(1)
             raise RuntimeError("bug")
 
-        action = HotkeyAction((1,), down.__contains__, flaky, 0.001)
+        action = HotkeyAction((1,), keys, flaky, 0.001)
         action.start()
         try:
-            down.add(1)
+            keys.down.add(1)
             assert self.wait_for(lambda: len(calls) == 1)
-            down.clear()
-            time.sleep(0.02)
-            down.add(1)
+            keys.down.clear()
+            self.let_the_watcher_see_the_keys_up(keys)
+            keys.down.add(1)
             assert self.wait_for(lambda: len(calls) == 2)
         finally:
             action.close()

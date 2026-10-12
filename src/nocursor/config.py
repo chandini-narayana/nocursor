@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, fields
 from pathlib import Path
 
 from nocursor.emergency import parse_hotkey
+
+BENCHMARK_MODES = ("synthetic", "video", "live")
 
 
 class ConfigError(ValueError):
@@ -63,6 +66,17 @@ class Config:
     pause_hotkey: str = "ctrl+alt+p"
     dry_run: bool = False
 
+    # Performance and logging
+    show_perf: bool = False  # show rolling software timings in the preview
+    log_file: Path | None = None  # opt-in rotating log file (None: no file is written)
+
+    # Benchmarks. All modes are dry-run: they can never send desktop input.
+    benchmark: str | None = None  # "synthetic", "video" or "live"
+    benchmark_frames: int | None = None  # synthetic / video: frames to process
+    benchmark_seconds: float | None = None  # live: duration
+    benchmark_video: Path | None = None  # video: a clip you supply
+    benchmark_output: Path | None = None  # where to write the JSON report
+
     def __post_init__(self) -> None:
         self.validate()
 
@@ -116,6 +130,51 @@ class Config:
         require(
             keys["emergency_hotkey"] != keys["pause_hotkey"],
             "pause_hotkey must differ from emergency_hotkey (--pause-key / --stop-key)",
+        )
+        self._validate_benchmark(require)
+
+    def _validate_benchmark(self, require: Callable[[bool, str], None]) -> None:
+        given = {
+            "--benchmark-frames": self.benchmark_frames is not None,
+            "--benchmark-seconds": self.benchmark_seconds is not None,
+            "--benchmark-video": self.benchmark_video is not None,
+            "--benchmark-output": self.benchmark_output is not None,
+        }
+        if self.benchmark is None:
+            stray = [flag for flag, present in given.items() if present]
+            require(not stray, f"{', '.join(stray)} only apply together with --benchmark")
+            return
+        require(
+            self.benchmark in BENCHMARK_MODES,
+            f"benchmark must be one of {', '.join(BENCHMARK_MODES)} (--benchmark)",
+        )
+        require(
+            self.benchmark_frames is None or 1 <= self.benchmark_frames <= 1_000_000,
+            "benchmark_frames must be within [1, 1000000] (--benchmark-frames)",
+        )
+        require(
+            self.benchmark_seconds is None or 0.0 < self.benchmark_seconds <= 3600.0,
+            "benchmark_seconds must be within (0, 3600] seconds (--benchmark-seconds)",
+        )
+        require(
+            not (self.benchmark == "live" and given["--benchmark-frames"]),
+            "--benchmark-frames applies to synthetic and video runs; live uses --benchmark-seconds",
+        )
+        require(
+            not (self.benchmark != "live" and given["--benchmark-seconds"]),
+            "--benchmark-seconds applies to live runs; synthetic and video use --benchmark-frames",
+        )
+        require(
+            self.benchmark != "video" or self.benchmark_video is not None,
+            "--benchmark video needs a clip: --benchmark-video PATH",
+        )
+        require(
+            self.benchmark == "video" or self.benchmark_video is None,
+            "--benchmark-video only applies to --benchmark video",
+        )
+        require(
+            not self.start_calibration,
+            "--calibrate cannot be combined with --benchmark (benchmarks send no input)",
         )
 
     @classmethod

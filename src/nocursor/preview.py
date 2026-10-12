@@ -1,8 +1,10 @@
-"""Camera preview window with hand landmarks, control status and keyboard commands."""
+"""Camera preview window: hand landmarks, the status HUD and keyboard commands.
+
+What the HUD says is decided in ``nocursor.hud`` (pure and tested); this module only draws it.
+"""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from enum import Enum
 from typing import Protocol
 
@@ -10,13 +12,17 @@ import numpy as np
 
 from nocursor.calibration import WizardState, WizardView
 from nocursor.gestures import PinchState
+from nocursor.hud import HudLine, StatusInfo, Tone, build_hud, help_lines
 from nocursor.interaction import InteractionState
 from nocursor.models import HAND_CONNECTIONS, INDEX_TIP, THUMB_TIP, HandObservation
 from nocursor.processor import GestureFrame
 from nocursor.tracking import TrackingState
 
+__all__ = ["NullPreview", "OpenCVPreview", "Preview", "PreviewCommand", "StatusInfo"]
+
 WINDOW_NAME = "NoCursor"
 _QUIT_KEYS = {27, ord("q"), ord("Q")}  # Esc, q: always stop, in every mode
+_HELP_KEYS = {ord("h"), ord("H"), ord("?")}  # toggles the help panel; never a command
 
 
 class PreviewCommand(Enum):
@@ -41,21 +47,15 @@ _COMMAND_KEYS: dict[int, PreviewCommand] = {
     ord("R"): PreviewCommand.RESET_CALIBRATION,
 }
 
-
-@dataclass(frozen=True)
-class StatusInfo:
-    """Non-gesture state the preview should display."""
-
-    control: str  # "LIVE", "DRY-RUN", "PAUSED", "CALIBRATING" or "STOPPED"
-    fps: float
-    hotkey: str
-    stop_reason: str | None = None
-    message: str | None = None  # transient notice (calibration saved, paused, ...)
-    fault: str | None = None  # persistent error, e.g. a failed button release
-    region: tuple[float, float, float, float] | None = None  # calibrated (l, t, r, b), view coords
-    calibration: WizardView | None = None
-    pause_hotkey: str = ""
-    diagnostics_lines: tuple[str, ...] = ()  # shown only with --diagnostics
+_TONE_COLORS: dict[Tone, tuple[int, int, int]] = {  # BGR
+    Tone.OK: (0, 220, 0),
+    Tone.INFO: (255, 255, 255),
+    Tone.PENDING: (0, 165, 255),
+    Tone.ACTIVE: (60, 60, 255),
+    Tone.SCROLL: (255, 255, 0),
+    Tone.WARN: (0, 215, 255),
+    Tone.ERROR: (60, 60, 255),
+}
 
 
 class Preview(Protocol):
@@ -77,7 +77,7 @@ class Preview(Protocol):
 
 
 class NullPreview:
-    """No-op preview for tests."""
+    """No-op preview for tests and headless runs."""
 
     def show(
         self,
@@ -104,6 +104,7 @@ class OpenCVPreview:
         self._cv2 = cv2
         self._margin = active_margin
         self._opened = False
+        self._show_help = False
         self._commands: list[PreviewCommand] = []
 
     def show(
@@ -130,12 +131,16 @@ class OpenCVPreview:
         if observation is not None:
             self._draw_hand(view, observation, gesture)
         self._draw_status(view, gesture, status)
+        if self._show_help:
+            self._draw_help(view, status)
 
         cv2.imshow(WINDOW_NAME, view)
         self._opened = True
         key = cv2.waitKey(1) & 0xFF
         if key in _QUIT_KEYS:
             return False
+        if key in _HELP_KEYS:
+            self._show_help = not self._show_help
         command = _COMMAND_KEYS.get(key)
         if command is not None:
             self._commands.append(command)
@@ -151,6 +156,7 @@ class OpenCVPreview:
             self._cv2.waitKey(1)
             self._opened = False
 
+    # --------------------------------------------------------------- drawing
     def _draw_hand(self, view: np.ndarray, obs: HandObservation, gesture: GestureFrame) -> None:
         cv2 = self._cv2
         height, width = view.shape[:2]
@@ -164,51 +170,44 @@ class OpenCVPreview:
             cv2.line(view, pts[a], pts[b], color, 2)
         for p in pts:
             cv2.circle(view, p, 3, (255, 255, 255), -1)
-        pinched = gesture.pinch is PinchState.PINCHED
-        cv2.circle(view, pts[INDEX_TIP], 9, (0, 0, 255) if pinched else (255, 200, 0), 2)
-        cv2.circle(view, pts[THUMB_TIP], 9, (0, 0, 255) if pinched else (255, 200, 0), 2)
+        # Fingertip rings: orange while a pinch is only a candidate, red once it is confirmed.
+        pressed = gesture.state in (InteractionState.PRESSED, InteractionState.DRAGGING)
+        pending = gesture.pinch_progress is not None or gesture.pinch is PinchState.CLOSING
+        ring = (60, 60, 255) if pressed else (0, 165, 255) if pending else (255, 200, 0)
+        cv2.circle(view, pts[INDEX_TIP], 9, ring, 2)
+        cv2.circle(view, pts[THUMB_TIP], 9, ring, 2)
 
     def _draw_status(self, view: np.ndarray, gesture: GestureFrame, status: StatusInfo) -> None:
-        pinch = _PINCH_LABELS.get(gesture.pinch, "-")
-        ratio = f"{gesture.pinch_ratio:.2f}" if gesture.pinch_ratio is not None else "-"
-        not_armed = gesture.pinch is PinchState.REOPEN
-        lines = [
-            (f"CONTROL: {status.control}", _control_color(status.control)),
-            (f"STATE: {gesture.state.value}", _state_color(gesture.state)),
-            (f"TRACKING: {gesture.tracking.value}", _tracking_color(gesture.tracking)),
-            (
-                f"PINCH: {pinch}  (ratio {ratio})",
-                (0, 165, 255) if not_armed else (255, 255, 255),
-            ),
-            (f"FPS: {status.fps:.0f}", (255, 255, 255)),
-        ]
-        if status.stop_reason:
-            lines.append((f"STOPPED: {status.stop_reason}", (0, 0, 255)))
-        if status.fault:
-            lines.append((f"FAULT: {status.fault}", (0, 0, 255)))
-        if status.message:
-            lines.append((status.message, (0, 255, 255)))
-        for i, (text, color) in enumerate(lines):
-            self._text(view, text, (10, 24 + 22 * i), 0.6, color)
+        hud = build_hud(gesture, status)
+        height, width = view.shape[:2]
+        rows = len(hud.details) + len(hud.notices)
+        panel_bottom = 38 + 20 * rows + 6
+        self._panel(view, (4, 4), (min(width - 4, 600), panel_bottom))
+        self._line(view, hud.headline, (12, 28), 0.7)
+        y = 54
+        for line in (*hud.details, *hud.notices):
+            self._line(view, line, (12, y), 0.5)
+            y += 20
 
-        height = view.shape[0]
-        top = 24 + 22 * len(lines) + 10
-        for i, text in enumerate(status.diagnostics_lines):
-            self._text(view, text, (10, top + 17 * i), 0.42, (255, 255, 0))
-        hint = f"Stop: Esc/Q here or {status.hotkey} anywhere"
-        if status.pause_hotkey:
-            hint += f" | Pause: P or {status.pause_hotkey} | Calibrate: C"
-        self._text(view, hint, (10, height - 10), 0.45, (255, 255, 255))
+        y = panel_bottom + 18
+        for text in status.diagnostics_lines:
+            self._text(view, text, (10, y), 0.42, (255, 255, 0))
+            y += 17
 
-        if status.control == "PAUSED":
-            self._banner(view, "PAUSED - press P to resume, then show an open hand", (0, 215, 255))
-        elif gesture.state in (InteractionState.SCROLL, InteractionState.SCROLL_PENDING):
-            active = gesture.state is InteractionState.SCROLL
-            self._banner(
-                view, "SCROLL MODE" if active else "scroll pose detected...", (255, 255, 0)
-            )
+        self._text(view, hud.hint, (10, height - 10), 0.45, (255, 255, 255))
         if status.calibration is not None and status.calibration.state is WizardState.COLLECTING:
             self._draw_calibration(view, status.calibration)
+
+    def _draw_help(self, view: np.ndarray, status: StatusInfo) -> None:
+        lines = help_lines(status.hotkey, status.pause_hotkey)
+        height, width = view.shape[:2]
+        box_w, box_h = min(width - 40, 470), 22 * len(lines) + 16
+        x0, y0 = (width - box_w) // 2, max(10, (height - box_h) // 2)
+        self._panel(view, (x0, y0), (x0 + box_w, y0 + box_h), alpha=0.8)
+        for i, text in enumerate(lines):
+            heading = text.isupper() or text.startswith("CONTROLS")
+            self._text(view, text, (x0 + 12, y0 + 26 + 22 * i), 0.5,
+                       (0, 255, 255) if heading else (255, 255, 255))  # fmt: skip
 
     def _draw_calibration(self, view: np.ndarray, wizard: WizardView) -> None:
         cv2 = self._cv2
@@ -228,10 +227,28 @@ class OpenCVPreview:
             view, (width - 130, 14), (width - 130 + bar_w, 24),
             (0, 220, 0) if wizard.stability >= 1.0 else (0, 165, 255), -1,
         )  # fmt: skip
+        self._text(view, "hold still", (width - 130, 40), 0.4, (255, 255, 255))
 
-    def _banner(self, view: np.ndarray, text: str, color: tuple[int, int, int]) -> None:
-        width = view.shape[1]
-        self._text(view, text, (max(10, width // 2 - 8 * len(text) // 2), 140), 0.8, color)
+    def _panel(
+        self,
+        view: np.ndarray,
+        top_left: tuple[int, int],
+        bottom_right: tuple[int, int],
+        alpha: float = 0.55,
+    ) -> None:
+        """Darken a rectangle so text stays readable over any camera image."""
+        cv2 = self._cv2
+        x0, y0 = top_left
+        x1, y1 = bottom_right
+        x1, y1 = min(x1, view.shape[1]), min(y1, view.shape[0])
+        roi = view[y0:y1, x0:x1]
+        if roi.size:
+            view[y0:y1, x0:x1] = cv2.addWeighted(roi, 1.0 - alpha, np.zeros_like(roi), alpha, 0)
+
+    def _line(
+        self, view: np.ndarray, line: HudLine, origin: tuple[int, int], scale: float
+    ) -> None:
+        self._text(view, line.text, origin, scale, _TONE_COLORS[line.tone])
 
     def _text(
         self,
@@ -244,39 +261,3 @@ class OpenCVPreview:
         cv2 = self._cv2
         cv2.putText(view, text, origin, cv2.FONT_HERSHEY_SIMPLEX, scale, (0, 0, 0), 3)
         cv2.putText(view, text, origin, cv2.FONT_HERSHEY_SIMPLEX, scale, color, 1)
-
-
-_PINCH_LABELS: dict[PinchState | None, str] = {
-    PinchState.OPEN: "open",
-    PinchState.CLOSING: "closing",
-    PinchState.PINCHED: "pinched",
-    # The detector ignores pinches until it has seen the thumb and index clearly apart.
-    PinchState.REOPEN: "NOT ARMED - spread thumb and index apart",
-}
-
-
-def _control_color(control: str) -> tuple[int, int, int]:
-    return {
-        "LIVE": (0, 220, 0),
-        "DRY-RUN": (0, 215, 255),
-        "PAUSED": (0, 215, 255),
-        "CALIBRATING": (255, 200, 0),
-    }.get(control, (0, 0, 255))
-
-
-def _state_color(state: InteractionState) -> tuple[int, int, int]:
-    if state in (InteractionState.PRESSED, InteractionState.DRAGGING):
-        return (0, 0, 255)
-    if state in (InteractionState.SCROLL, InteractionState.SCROLL_PENDING):
-        return (255, 255, 0)
-    if state is InteractionState.POINTER:
-        return (0, 220, 0)
-    return (0, 215, 255)
-
-
-def _tracking_color(state: TrackingState) -> tuple[int, int, int]:
-    return {
-        TrackingState.TRACKING: (0, 220, 0),
-        TrackingState.ACQUIRING: (0, 215, 255),
-        TrackingState.UNCERTAIN: (0, 165, 255),
-    }.get(state, (0, 0, 255))
