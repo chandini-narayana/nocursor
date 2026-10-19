@@ -199,7 +199,7 @@ class OpenCVPreview:
             self._draw_calibration(view, status.calibration)
 
     def _draw_help(self, view: np.ndarray, status: StatusInfo) -> None:
-        lines = help_lines(status.hotkey, status.pause_hotkey)
+        lines = help_lines(status.hotkey, status.pause_hotkey, status.right_click)
         height, width = view.shape[:2]
         box_w, box_h = min(width - 40, 470), 22 * len(lines) + 16
         x0, y0 = (width - box_w) // 2, max(10, (height - box_h) // 2)

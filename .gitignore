@@ -1,4 +1,5 @@
 .venv/
+.venv-ml/
 __pycache__/
 *.egg-info/
 .pytest_cache/
@@ -13,6 +14,11 @@ calibration.local.json.tmp
 # Local runtime output: logs and benchmark reports (machine-specific)
 logs/
 benchmarks/
+
+# Dynamic gesture research data: recorded landmark sequences are personal data, and trained
+# models and reports derived from them are reviewed by the owner before anything is shared.
+datasets/
+ml_runs/
 
 # Build output
 build/

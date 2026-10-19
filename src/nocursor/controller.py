@@ -45,6 +45,7 @@ class InputBackend(Protocol):
     def mouse_down(self) -> None: ...
     def mouse_up(self) -> None: ...
     def scroll(self, clicks: int) -> None: ...
+    def right_click(self) -> None: ...
 
 
 class PyAutoGUIBackend:
@@ -91,6 +92,10 @@ class PyAutoGUIBackend:
         """
         amount = clicks * WINDOWS_WHEEL_DELTA if sys.platform == "win32" else clicks
         self._guarded(lambda: self._pg.scroll(amount))
+
+    def right_click(self) -> None:
+        """One complete right click (press and release together; the button is never held)."""
+        self._guarded(self._pg.rightClick)
 
     def _guarded(self, action: Callable[[], object]) -> None:
         try:
@@ -144,12 +149,15 @@ class ScreenSizeOnlyBackend:
     def scroll(self, clicks: int) -> None:
         self._blocked("scroll")
 
+    def right_click(self) -> None:
+        self._blocked("right_click")
+
 
 @dataclass(frozen=True)
 class ActionRecord:
     """One discrete input event, kept so dry-run (and tests) can inspect intent."""
 
-    kind: str  # mouse_down, mouse_up, click, drag, scroll, release
+    kind: str  # mouse_down, mouse_up, click, drag, scroll, right_click, release
     detail: str = ""
     sent: bool = False  # True only if it was really sent to the desktop backend
 
@@ -194,6 +202,7 @@ class SafeController:
         self.mouse_downs_sent = 0
         self.mouse_ups_sent = 0
         self.scrolls_sent = 0
+        self.right_clicks_sent = 0
         self.actions_suppressed = 0
         self.refused_button_events = 0
         self.events_accepted = 0  # discrete events sent or simulated: press, release, scroll
@@ -340,6 +349,30 @@ class SafeController:
             self._log(ActionRecord("scroll", str(clicks), sent=True))
             return True
 
+    def right_click(self) -> bool:
+        """Right-click at the current cursor position. Returns True only if input was sent.
+
+        A complete click, never a held button. Refused while a left press is outstanding (real or
+        simulated), so a drag can never be turned into, or interrupted by, a right click.
+        """
+        with self._lock:
+            gate = self._gate()
+            if gate is _Gate.REFUSE:
+                self.actions_suppressed += 1
+                return False
+            if self._button_down:
+                return self._refuse("right click while a button press is outstanding")
+            if gate is _Gate.SIMULATE:
+                self.actions_suppressed += 1
+                self._log(ActionRecord("right_click"))
+                self._say("dry-run: right click suppressed")
+                return False
+            if not self._send(self._backend.right_click):
+                return False
+            self.right_clicks_sent += 1
+            self._log(ActionRecord("right_click", sent=True))
+            return True
+
     # --------------------------------------------------------------- internals
     def _say(self, message: str, *args: object) -> None:
         """Dry-run narration: INFO normally, DEBUG when ``quiet`` (so timing is not perturbed)."""
@@ -347,7 +380,7 @@ class SafeController:
 
     def _log(self, record: ActionRecord) -> None:
         self.records.append(record)
-        discrete = record.kind in ("mouse_down", "mouse_up", "scroll") or (
+        discrete = record.kind in ("mouse_down", "mouse_up", "scroll", "right_click") or (
             record.kind == "click" and record.detail == "single"
         )
         if discrete:

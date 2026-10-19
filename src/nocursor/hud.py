@@ -54,6 +54,7 @@ class StatusInfo:
     perf_line: str | None = None  # shown only with --show-perf
     toast: str | None = None  # a short-lived note about an event the controller accepted
     button_held: bool = False  # the controller holds (or, in dry-run, simulates) a press
+    right_click: bool = False  # --right-click is on (only changes the help panel)
 
 
 @dataclass(frozen=True)
@@ -76,6 +77,7 @@ TOAST_TEXT = {
     "press": "Button pressed",
     "click": "Released: click",
     "drag_end": "Released: drag finished",
+    "right_click": "Right-clicked",
 }
 
 
@@ -124,6 +126,11 @@ def _headline(g: GestureFrame, s: StatusInfo) -> HudLine:
             return HudLine("PRESS NOT SENT - input is blocked", Tone.ERROR)
         verb = "PRESSED" if state is InteractionState.PRESSED else "DRAGGING"
         return HudLine(f"{verb} - button held{simulated}", Tone.ACTIVE)
+    if g.right_progress is not None:  # a candidate, not an action
+        done, needed = g.right_progress
+        return HudLine(f"RIGHT-CLICK PENDING {done}/{needed} - not clicked yet", Tone.PENDING)
+    if g.right_pinch is PinchState.PINCHED:
+        return HudLine("RIGHT PINCH HELD - release, then pinch again", Tone.INFO)
     if g.pinch is PinchState.REOPEN or state is InteractionState.REARMING:
         return HudLine("NOT ARMED - spread thumb and index apart", Tone.WARN)
     if state is InteractionState.PINCH_PENDING:
@@ -190,8 +197,11 @@ def _hint(s: StatusInfo) -> str:
     return "  |  ".join(parts)
 
 
-def help_lines(hotkey: str, pause_hotkey: str) -> tuple[str, ...]:
+def help_lines(hotkey: str, pause_hotkey: str, right_click: bool = False) -> tuple[str, ...]:
     """The controls panel shown with the H key."""
+    extra = (
+        ("Thumb to middle tip (index, ring, little out): right-click",) if right_click else ()
+    )
     return (
         "CONTROLS (press H to hide)",
         "Esc / Q ........... stop (always works)",
@@ -206,4 +216,5 @@ def help_lines(hotkey: str, pause_hotkey: str) -> tuple[str, ...]:
         "Pinch + release .... click (hold ~0.2 s first)",
         "Pinch + move hand .. drag",
         "Index+middle up, ring+little folded: scroll",
+        *extra,
     )

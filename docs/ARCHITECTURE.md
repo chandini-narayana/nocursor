@@ -132,6 +132,18 @@ state is implemented once, at the top of `InteractionMachine.step`.
 5. A confirmed pinch-down starts `PRESSED`.
 6. Pointing.
 
+**Right click (opt-in, `--right-click`).** A second `PinchDetector` runs on the thumb-to-middle
+fingertip ratio with the same thresholds, confirmation, hysteresis, cooldown and re-arming. A frame
+counts only if the hand is in the right-click pose (`FingerPose.is_right_click_pose`: index, ring and
+little finger extended) and the thumb is nearer the middle fingertip than the index fingertip by
+`RIGHT_CLICK_INDEX_MARGIN`; any other frame is fed to the detector as an open hand. While the
+thumb sits in the right-click zone, and during the cooldown after a right click, the left detector
+is likewise fed an open hand, so one pinch cannot press both buttons. It is skipped while a left
+press is held, while scrolling and when tracking is unreliable. A confirmed right pinch yields one
+`RightClick` action (a complete click, never a held button), which `SafeController.right_click`
+refuses while a left press is outstanding and which obeys stop, pause and dry-run like every other
+action. With the option off, the left detector receives exactly the ratio it always did.
+
 Anything ambiguous (half-curled fingers, low confidence, a partly visible hand) falls to the
 safest outcome: no scroll, no press.
 
@@ -210,11 +222,41 @@ camera.read() ... [frame arrives] ---- inference ---- gesture ---- dispatch ----
 excludes camera exposure and transfer, the display, and operating-system input handling, so it is
 **not** camera-to-display latency. See [BENCHMARKING.md](BENCHMARKING.md).
 
+## Dynamic gesture data tools (research extension)
+
+`nocursor.dynamic` is a separate package that the application never imports and that imports none
+of the desktop-input code (`controller`, `dispatch`, `app`, `emergency`, PyAutoGUI); a test checks
+both directions. It reuses the landmark type, the per-frame trust check (`TrackingMonitor`), the
+finger-extension measure (`scroll.classify_hand`), the camera and the tracker.
+
+| Module | Responsibility |
+|---|---|
+| `schema` | Conventions, labels, limits, `SessionHeader`, `SequenceRecord` |
+| `dataset` | JSON Lines reading, writing and validation; the append-only `SessionWriter` |
+| `features` | View coordinates, fixed-grid resampling, hand-size normalisation, the feature definition and its hash |
+| `pose`, `quality` | The open-palm pose; recording gates; label review (warnings only) |
+| `recorder` | One take at a time: countdown, recording, accept or reject (pure, clock injected) |
+| `collect`, `view` | Protocol and session logic (pure), the camera loop, the OpenCV window |
+| `summary`, `cli` | Dataset summary and `python -m nocursor.dynamic` |
+| `splits` | Session-grouped split, the frozen manifest, mechanical leakage checks, loaders that refuse test or stream data unless asked |
+| `baseline`, `augment` | The rule-based baseline (untuned and tuned); training-only augmentation |
+| `classifier`, `model_io` | The shared prediction interface; model artifacts and the NumPy-only GRU, validated on load |
+| `train` | Baseline tuning and GRU training. The only module that touches PyTorch, imported lazily |
+| `scoring`, `evaluate`, `report`, `cli_ml` | Metrics and intervals; the offline evaluation and stream analysis; reports; the `split` / `fit-baseline` / `train` / `evaluate` commands |
+
+Nothing in the package is wired into the application: a trained model is not used for any desktop
+action, and live use is not built. PyTorch is needed only by `train`; the application and every
+other module (including loading and running a model) are NumPy only, which a test checks in fresh
+interpreters. See [DYNAMIC_GESTURES.md](DYNAMIC_GESTURES.md) for the format, the direction
+convention, the split method and the evaluation.
+
 ## Privacy
 
-Frames live only in memory for the duration of one loop iteration. Nothing is recorded, saved or
-transmitted. The only network access is the opt-in model download. Logs never contain frames or
-landmark arrays, and the log formatter replaces your home directory with `~`.
+Frames live only in memory for the duration of one loop iteration. In the application nothing
+is recorded, saved or transmitted (the opt-in gesture collection tool saves landmark numbers,
+never video, to a git-ignored folder). The only network access is the opt-in model download.
+Logs never contain frames or landmark arrays, and the log formatter replaces your home
+directory with `~`.
 
 ## Testing strategy
 

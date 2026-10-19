@@ -27,6 +27,10 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "ruff>=0.5"]
+# Training only (dynamic-gesture research). Never needed to run NoCursor or to run a trained
+# model: inference is plain NumPy. Install it in a separate environment, see
+# docs/DYNAMIC_GESTURES.md.
+ml = ["torch>=2.2"]
 
 [project.scripts]
 nocursor = "nocursor.cli:main"

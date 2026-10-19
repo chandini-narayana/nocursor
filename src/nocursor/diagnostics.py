@@ -40,6 +40,8 @@ class PinchDiagnostics:
     confirm_frames: int
     scroll_candidate: bool
     fingers: tuple[float, ...]  # extension ratios: index, middle, ring, little
+    right_ratio: float | None = None  # thumb-middle ratio; None unless --right-click is on
+    right_eligible: bool | None = None  # right-click pose met and the thumb nearer the middle tip
 
 
 def explain(
@@ -134,6 +136,13 @@ class DiagnosticsReporter:
         fingers = " ".join(
             f"{label}{value:.1f}" for label, value in zip(FINGER_LABELS, diag.fingers, strict=False)
         )
+        right_line = ()
+        if diag.right_ratio is not None:
+            right_line = (
+                f"right-click: thumb-middle {diag.right_ratio:.2f}   "
+                f"eligible: {'yes' if diag.right_eligible else 'no'} "
+                "(index, ring, little out; thumb nearer the middle tip)",
+            )
         return (
             f"mode: {mode_label(diag.depth_in_use)}",
             ratio_line,
@@ -141,6 +150,7 @@ class DiagnosticsReporter:
             f"lowest in {self._window_s:g}s: {_fmt(lowest)}",
             f"armed: {armed}   confirm {diag.candidate_frames}/{diag.confirm_frames}",
             f"scroll candidate: {'yes' if diag.scroll_candidate else 'no'}   fingers {fingers}",
+            *right_line,
             f"state: {diag.state.value}   tracking: {diag.tracking.value}",
             f"why: {diag.reason}",
         )

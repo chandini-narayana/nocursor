@@ -16,7 +16,7 @@ from nocursor.diagnostics import DiagnosticsReporter, mode_label
 from nocursor.dispatch import apply_actions
 from nocursor.emergency import EmergencyStop, PauseControl
 from nocursor.hud import StatusInfo, toast_text
-from nocursor.interaction import MouseDown, MouseUp, Scroll
+from nocursor.interaction import MouseDown, MouseUp, RightClick, Scroll
 from nocursor.mapping import ViewRegion
 from nocursor.models import HandObservation
 from nocursor.preview import Preview, PreviewCommand
@@ -211,7 +211,10 @@ class NoCursorApp:
             if not self._stop.is_set():  # the hotkey may have fired during inference
                 self._reconcile(gesture)  # never act on top of a press the machine does not know
                 self._remember(apply_actions(self._controller, self._processor, gesture.actions))
-                acted = any(isinstance(a, MouseDown | MouseUp | Scroll) for a in gesture.actions)
+                acted = any(
+                    isinstance(a, MouseDown | MouseUp | Scroll | RightClick)
+                    for a in gesture.actions
+                )
             self._reconcile()
             profiler.record_since("dispatch", started)
             profiler.end_dispatch(had_actions=acted)  # latency ends here; display is not in it
@@ -366,6 +369,7 @@ class NoCursorApp:
             perf_line=self._perf_line if self._show_perf else None,
             toast=toast,
             button_held=self._controller.button_down,
+            right_click=self._processor.right_click_enabled,
         )
 
     def _update_fps(self, dt: float) -> None:

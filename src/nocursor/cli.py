@@ -149,6 +149,11 @@ def build_parser() -> argparse.ArgumentParser:
                        help="EXPERIMENTAL: also use MediaPipe's coarse depth estimate (3D pinch "
                             "ratio). It stopped pinches registering on at least one webcam")
 
+    pinch.add_argument("--right-click", action="store_true", dest="right_click",
+                       help="EXPERIMENTAL, off by default: enable right click, a thumb-middle "
+                            "pinch made with the index, ring and little fingers extended. It "
+                            "uses the pinch thresholds above")
+
     scroll = p.add_argument_group("two-finger scrolling")
     scroll.add_argument("--scroll-stable-frames", type=int, dest="scroll_stable_frames",
                         help=_help(d, "scroll_stable_frames", "frames the pose must hold before "

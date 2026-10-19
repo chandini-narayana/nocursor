@@ -9,6 +9,7 @@ import numpy as np
 from nocursor.models import (
     INDEX_TIP,
     MIDDLE_MCP,
+    MIDDLE_TIP,
     NUM_LANDMARKS,
     THUMB_TIP,
     WRIST,
@@ -63,6 +64,7 @@ def make_pose_hand(
     aspect_ratio: float = 1.0,
     depth: float = 0.0,
     thumb_dz: float = 0.0,
+    thumb_to: str = "index",
 ) -> HandObservation:
     """Build a hand with explicit finger states ("ext", "fold" or "amb").
 
@@ -94,7 +96,11 @@ def make_pose_hand(
         pts[knuckle + 2, 2] = -depth * radius * (0.5 + 0.35 * ratio)
         pts[tip, 2] = -depth * radius * (0.5 + 0.5 * ratio)
     pts[1:5, :2] = wrist + np.array([0.04, -0.03]) * squash  # thumb chain; tip set below
-    index_tip = pts[INDEX_TIP, :2]
-    pts[THUMB_TIP, :2] = index_tip + np.array([pinch_ratio * hand_size / aspect_ratio, 0.0])
-    pts[THUMB_TIP, 2] = pts[INDEX_TIP, 2] + thumb_dz
+    # ``thumb_to`` picks the fingertip the thumb is measured from: "index" (the default, the
+    # left-click pinch) or "middle" (the right-click pinch). The offset is to the right of it,
+    # which for "middle" is away from the index finger.
+    anchor = MIDDLE_TIP if thumb_to == "middle" else INDEX_TIP
+    anchor_xy = pts[anchor, :2]
+    pts[THUMB_TIP, :2] = anchor_xy + np.array([pinch_ratio * hand_size / aspect_ratio, 0.0])
+    pts[THUMB_TIP, 2] = pts[anchor, 2] + thumb_dz
     return HandObservation(pts, confidence, aspect_ratio)

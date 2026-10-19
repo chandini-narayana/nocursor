@@ -1,4 +1,4 @@
-"""Where NoCursor keeps its local runtime files (model, calibration, logs, benchmarks)."""
+"""Where NoCursor keeps its local runtime files (model, calibration, logs, benchmarks, datasets)."""
 
 from __future__ import annotations
 
@@ -26,3 +26,13 @@ def default_log_path() -> Path:
 
 def default_benchmark_dir() -> Path:
     return runtime_root() / "benchmarks"
+
+
+def default_ml_runs_dir() -> Path:
+    """Splits, trained models and evaluation reports (derived from personal data; git-ignored)."""
+    return runtime_root() / "ml_runs"
+
+
+def default_dataset_dir() -> Path:
+    """Recorded gesture landmark sequences (personal data; excluded from version control)."""
+    return runtime_root() / "datasets"

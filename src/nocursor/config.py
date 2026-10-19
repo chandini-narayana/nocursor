@@ -43,6 +43,9 @@ class Config:
     # use MediaPipe's coarse z estimate, which keeps touching fingertips above the threshold
     # on some webcams.
     pinch_use_depth: bool = False
+    # Opt-in right click: a thumb-middle pinch made with the index, ring and little fingers
+    # extended. Off unless --right-click is given; it reuses the pinch thresholds above.
+    right_click: bool = False
     diagnostics: bool = False  # show/log live pinch internals (read-only; changes no behaviour)
 
     # Drag: how far (screen pixels, smoothed) the fingertip must move after the press

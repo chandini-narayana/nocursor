@@ -71,7 +71,13 @@ class Scroll:
     clicks: int  # positive = wheel up
 
 
-Action = MoveTo | MouseDown | MouseUp | Scroll
+@dataclass(frozen=True)
+class RightClick:
+    """One complete right-button click. The right button is never held, so it cannot be left
+    pressed by tracking loss, a pause or a stop."""
+
+
+Action = MoveTo | MouseDown | MouseUp | Scroll | RightClick
 
 
 @dataclass(frozen=True)
@@ -84,6 +90,7 @@ class MachineInput:
     scroll_pose: bool = False  # stable-pose candidate, already excluded when pinching
     scroll_y: float | None = None  # smoothed vertical fingertip position
     scroll_scale: float | None = None  # hand size for normalising scroll movement
+    right: PinchResult | None = None  # right-click pinch (None: disabled or not applicable)
 
 
 class InteractionMachine:
@@ -193,8 +200,18 @@ class InteractionMachine:
             self._state = InteractionState.PRESSED
             return (MouseDown(),)
 
+        # The left pinch has priority; the processor makes the two exclusive, and this keeps one
+        # frame from ever carrying both.
+        right = inp.right
+        if right is not None and right.clicked:
+            self._state = InteractionState.PINCH_PENDING
+            return (RightClick(),)
+
         self._state = self._free_state(pinch)
-        return () if pinch.freeze_cursor else (_move(target),)
+        right_freeze = right is not None and right.freeze_cursor
+        if right_freeze and self._state is InteractionState.POINTER:
+            self._state = InteractionState.PINCH_PENDING
+        return () if (pinch.freeze_cursor or right_freeze) else (_move(target),)
 
     def _step_scroll(self, inp: MachineInput) -> tuple[Action, ...]:
         assert inp.scroll_y is not None and inp.scroll_scale is not None

@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from nocursor.config import Config
 from nocursor.diagnostics import PinchDiagnostics, explain
 from nocursor.gestures import (
+    RIGHT_CLICK_INDEX_MARGIN,
     PinchDetector,
     PinchResult,
     PinchState,
@@ -22,8 +23,14 @@ from nocursor.interaction import (
     MoveTo,
 )
 from nocursor.mapping import CursorMapper, ViewRegion
-from nocursor.models import HandObservation
-from nocursor.scroll import ScrollTracker, classify_hand, finger_ratios, scroll_signal
+from nocursor.models import MIDDLE_TIP, HandObservation
+from nocursor.scroll import (
+    FingerPose,
+    ScrollTracker,
+    classify_hand,
+    finger_ratios,
+    scroll_signal,
+)
 from nocursor.smoothing import ExponentialSmoother
 from nocursor.tracking import TrackingMonitor, TrackingState
 
@@ -45,6 +52,10 @@ class GestureFrame:
     pinch_progress: tuple[int, int] | None = None
     # Plain-words detail for tracking states: why a hand was rejected, or "n/m" while locking on.
     tracking_note: str | None = None
+    # Right-click pinch (only with --right-click): its state, and candidate progress while it is
+    # still being confirmed. A candidate is not a click.
+    right_pinch: PinchState | None = None
+    right_progress: tuple[int, int] | None = None
 
     @property
     def cursor(self) -> tuple[int, int] | None:
@@ -94,6 +105,17 @@ class GestureProcessor:
             release_frames=config.pinch_release_frames,
         )
         self._release_level = config.pinch_threshold * config.pinch_release_factor
+        # The right-click pinch (thumb to middle fingertip) reuses the left pinch's thresholds,
+        # confirmation, hysteresis and cooldown. It exists only when explicitly enabled.
+        self._right: PinchDetector | None = None
+        if config.right_click:
+            self._right = PinchDetector(
+                threshold=config.pinch_threshold,
+                release_factor=config.pinch_release_factor,
+                confirm_frames=config.pinch_confirm_frames,
+                cooldown_s=config.click_cooldown_s,
+                release_frames=config.pinch_release_frames,
+            )
         self._use_depth = config.pinch_use_depth
         self._diagnostics_enabled = config.diagnostics
         self.diagnostics: PinchDiagnostics | None = None  # latest record when enabled
@@ -127,6 +149,10 @@ class GestureProcessor:
     @property
     def pinch_threshold(self) -> float:
         return self._pinch.snapshot(0.0).engage
+
+    @property
+    def right_click_enabled(self) -> bool:
+        return self._right is not None
 
     @property
     def holding_button(self) -> bool:
@@ -166,6 +192,8 @@ class GestureProcessor:
             self._scroll_smoother.reset()
             self._hand_size.reset()
             self._pinch.reset()
+            if self._right is not None:
+                self._right.reset()
             actions = self._machine.step(MachineInput(now, tracking, paused=paused))
             if self._diagnostics_enabled:
                 self.diagnostics = self._diagnose(
@@ -183,8 +211,9 @@ class GestureProcessor:
 
         # A scroll pose is only recognised with the thumb and index finger clearly apart and
         # no button held.
+        pose = classify_hand(observation)
         scroll_pose = (
-            classify_hand(observation).is_scroll_pose
+            pose.is_scroll_pose
             and ratio >= self._release_level
             and not self._machine.holding
         )
@@ -193,6 +222,13 @@ class GestureProcessor:
             scroll_y = self._scroll_smoother.update((scroll_signal(observation), 0.0))[0]
         else:
             self._scroll_smoother.reset()
+
+        right, right_info = self._right_click_input(observation, pose, ratio, scroll_pose, now)
+        left_ratio = ratio
+        if right_info is not None and right_info[2]:
+            # The thumb is on the middle fingertip (or a right-click was just made): the left
+            # pinch sees an open hand, so one physical pinch can never press both buttons.
+            left_ratio = max(ratio, self._release_level)
 
         # Once scroll mode is *active* the pinch detector is held disarmed, so a thumb
         # brushing a finger cannot click and the hand must be seen open again afterwards.
@@ -203,25 +239,32 @@ class GestureProcessor:
             self._pinch.reset()
             pinch = PinchResult(PinchState.REOPEN, clicked=False, freeze_cursor=True)
         else:
-            pinch = self._pinch.update(ratio, now)
+            pinch = self._pinch.update(left_ratio, now)
 
         actions = self._machine.step(
             MachineInput(
                 now, tracking, target=target, pinch=pinch, scroll_pose=scroll_pose,
-                scroll_y=scroll_y, scroll_scale=hand_size,
+                scroll_y=scroll_y, scroll_scale=hand_size, right=right,
             )
         )  # fmt: skip
         if self._machine.state is InteractionState.SCROLL:
             self._pinch.reset()  # includes the frame on which scroll mode just started
+            if self._right is not None:
+                self._right.reset()
         if self._diagnostics_enabled:
             self.diagnostics = self._diagnose(
                 now, tracking, observation, paused=False, ratio=ratio, scroll_pose=scroll_pose,
-                clicked=pinch.clicked,
+                clicked=pinch.clicked, right_info=right_info,
             )
         snapshot = self._pinch.snapshot(now)  # read-only
         progress = None
         if snapshot.candidate_frames > 0 and not snapshot.pinched:
             progress = (snapshot.candidate_frames, snapshot.confirm_frames)
+        right_progress = None
+        if self._right is not None and right is not None:
+            mine = self._right.snapshot(now)
+            if mine.candidate_frames > 0 and not mine.pinched:
+                right_progress = (mine.candidate_frames, mine.confirm_frames)
         return GestureFrame(
             tracking=tracking,
             state=self._machine.state,
@@ -230,9 +273,44 @@ class GestureProcessor:
             actions=actions,
             scroll_pose=scroll_pose,
             pinch_progress=progress,
+            right_pinch=right.state if right is not None else None,
+            right_progress=right_progress,
         )
 
     # --------------------------------------------------------------- helpers
+    def _right_click_input(
+        self, observation: HandObservation, pose: FingerPose, ratio: float, scroll_pose: bool,
+        now: float,
+    ) -> tuple[PinchResult | None, tuple[float, bool, bool] | None]:  # fmt: skip
+        """Feed the right-click pinch for one frame (only when --right-click is on).
+
+        Returns ``(result, (thumb-middle ratio, eligible, suppress_left))``; both are None when
+        the feature is off or this frame must not act on it (a left press is held, scrolling).
+
+        A frame is *eligible* only when the hand is in the right-click pose (index, ring and
+        little finger extended) **and** the thumb is nearer the middle fingertip than the index
+        fingertip by ``RIGHT_CLICK_INDEX_MARGIN``. An ineligible frame is fed as an open hand, so
+        the detector's own confirmation, hysteresis, cooldown and re-arming apply unchanged and
+        a pinch that only becomes eligible part-way is not counted.
+        """
+        if self._right is None:
+            return None, None
+        if (
+            self._machine.holding
+            or scroll_pose
+            or self._machine.state is InteractionState.SCROLL
+        ):
+            self._right.reset()  # a held left press, or scrolling, always wins
+            return None, None
+        middle = pinch_ratio(observation, self._use_depth, MIDDLE_TIP)
+        eligible = pose.is_right_click_pose and ratio - middle >= RIGHT_CLICK_INDEX_MARGIN
+        left_cooling_down = self._pinch.snapshot(now).cooldown_remaining_s > 0
+        fed = middle if (eligible and not left_cooling_down) else max(middle, self._release_level)
+        result = self._right.update(fed, now)
+        right_cooling_down = self._right.snapshot(now).cooldown_remaining_s > 0
+        suppress_left = (eligible and middle < self._release_level) or right_cooling_down
+        return result, (middle, eligible, suppress_left)
+
     def _tracking_note(self, tracking: TrackingState) -> str | None:
         if tracking is TrackingState.UNCERTAIN:
             return self._monitor.last_reason
@@ -250,6 +328,7 @@ class GestureProcessor:
         ratio: float | None,
         scroll_pose: bool,
         clicked: bool,
+        right_info: tuple[float, bool, bool] | None = None,
     ) -> PinchDiagnostics:
         """Build the read-only diagnostics record. Never alters any gesture state."""
         usable = observation is not None and tracking is TrackingState.TRACKING and not paused
@@ -284,6 +363,8 @@ class GestureProcessor:
             confirm_frames=snapshot.confirm_frames,
             scroll_candidate=scroll_pose,
             fingers=finger_ratios(observation) if usable and observation else (),
+            right_ratio=right_info[0] if right_info is not None else None,
+            right_eligible=right_info[1] if right_info is not None else None,
         )
 
     def _make_mapper(self, region: ViewRegion | None) -> CursorMapper:

@@ -8,9 +8,19 @@ from enum import Enum
 
 from nocursor.models import INDEX_TIP, MIDDLE_MCP, THUMB_TIP, WRIST, HandObservation
 
+# Right-click only: the thumb must be nearer the middle fingertip than the index fingertip by
+# at least this much (in hand sizes). Keeps the thumb-index pinch (left click) and the
+# thumb-middle pinch (right click) from ever being the same pinch.
+RIGHT_CLICK_INDEX_MARGIN = 0.10
 
-def pinch_ratio(observation: HandObservation, use_depth: bool = False) -> float:
-    """Thumb-tip to index-tip distance divided by hand size (wrist to middle knuckle).
+
+def pinch_ratio(
+    observation: HandObservation, use_depth: bool = False, tip: int = INDEX_TIP
+) -> float:
+    """Thumb-tip to ``tip`` distance divided by hand size (wrist to middle knuckle).
+
+    ``tip`` is the index fingertip (the left-click pinch) unless the right-click pinch asks for the
+    middle fingertip.
 
     The default is the image-plane (2D) ratio: on real webcams MediaPipe's depth (z)
     estimate disagrees between the two fingertips by enough to keep touching fingers
@@ -22,16 +32,16 @@ def pinch_ratio(observation: HandObservation, use_depth: bool = False) -> float:
         size = observation.distance_3d(WRIST, MIDDLE_MCP)
         if size <= 0.0:
             return math.inf
-        return observation.distance_3d(THUMB_TIP, INDEX_TIP) / size
-    return pinch_ratio_2d(observation)
+        return observation.distance_3d(THUMB_TIP, tip) / size
+    return pinch_ratio_2d(observation, tip)
 
 
-def pinch_ratio_2d(observation: HandObservation) -> float:
-    """The image-plane thumb-index ratio (ignores MediaPipe's z estimate)."""
+def pinch_ratio_2d(observation: HandObservation, tip: int = INDEX_TIP) -> float:
+    """The image-plane thumb-to-``tip`` ratio (ignores MediaPipe's z estimate)."""
     size = observation.hand_size
     if size <= 0.0:
         return math.inf
-    return observation.distance(THUMB_TIP, INDEX_TIP) / size
+    return observation.distance(THUMB_TIP, tip) / size
 
 
 class PinchState(Enum):

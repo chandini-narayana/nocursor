@@ -25,7 +25,8 @@ send input at all.
 [Technology](#technology-stack) · [Install](#install) · [Model setup](#model-setup) ·
 [Run](#run) · [Dry-run](#dry-run) · [Calibration](#calibration) · [Safety](#safety-and-the-emergency-stop) ·
 [Benchmarking](#benchmarking) · [Testing](#testing) · [Limitations and troubleshooting](#known-limitations) ·
-[Privacy](#privacy) · [Roadmap](#roadmap-and-contributing)
+[Dynamic gestures](#dynamic-gesture-research-extension) · [Privacy](#privacy) ·
+[Roadmap](#roadmap-and-contributing)
 
 ## Features
 
@@ -52,6 +53,7 @@ send input at all.
 | **Pinch** thumb and index, hold ~0.2 s, release | **Click**: the button is pressed when the pinch is confirmed and released when the pinch ends |
 | Pinch, then **move your hand** more than 30 px, release at the drop point | **Drag** |
 | **Index + middle** fingers up, ring + little folded, then move up / down | **Scroll** (hand up = wheel up; `--scroll-invert` flips it) |
+| **Thumb on the middle fingertip**, with index, ring and little fingers extended (**opt-in**: `--right-click`) | **Right click**: one complete click when the pinch is confirmed (never a held button) |
 | Hand out of view or unreliable | Nothing happens; any held button is released |
 
 A pinch only counts after the hand has been seen open (thumb and index clearly apart). That is
@@ -64,6 +66,29 @@ consecutive frames. A 3D variant using MediaPipe's depth estimate exists (`--pin
 experimental) but is off by default: on real hardware the depth estimate of the two fingertips
 disagreed enough to stop genuine pinches registering. The HUD, the `--diagnostics` panel, the
 banner and every benchmark report state which calculation is active.
+
+### Right click (optional, off by default)
+
+Right click is **experimental and disabled unless you start NoCursor with `--right-click`**; without
+the flag nothing about the left click, drag or scroll changes. The gesture is an "OK sign" made
+with the *middle* finger: extend the index, ring and little fingers, then touch your thumb to the
+middle fingertip and hold it for about 0.2 s.
+
+Why those fingers must be out: when you simply point, the thumb often rests against the curled
+middle finger, so a plain "thumb touches the middle finger" rule would right-click constantly. In
+this project's own recordings of one person that rule produced false right-clicks at roughly 1 to 8
+per minute of pointing, idling and ordinary use, while requiring the index, ring and little fingers
+to be extended produced none in about 12 minutes. Pointing (other fingers curled) and the two-finger
+scroll pose (ring and little folded) therefore never count, and the thumb has to be clearly nearer
+the middle fingertip than the index fingertip, so the same pinch can never press both buttons.
+
+It reuses the pinch thresholds and rules: the hand must be seen open first, `--pinch-confirm-frames`
+frames are needed, `--click-cooldown` applies (also between a left and a right click), the pointer
+freezes while you pinch, and nothing happens while a left button is held, while scrolling, while
+paused, or when tracking is lost. The HUD shows **RIGHT-CLICK PENDING n/m - not clicked yet** until
+the click is really sent. **Not validated on a webcam:** those figures are an offline replay of old
+landmark recordings (no right-click was ever recorded) and the thresholds are hand-proportion
+estimates. Try `--dry-run --diagnostics --right-click` first.
 
 ### Preview keys
 
@@ -197,6 +222,7 @@ rejected with a message naming the flag.
 | `--pinch-release-frames` | 2 | Open frames needed to confirm a release, so one glitch cannot drop a drag |
 | `--click-cooldown` | 0.4 | Minimum seconds between accepted pinches |
 | `--drag-start` | 30 | Screen pixels to move while pinched before a click becomes a drag |
+| `--right-click` | off | EXPERIMENTAL: enable right click (thumb on the middle fingertip, index/ring/little fingers extended); uses the pinch thresholds |
 | `--pinch-depth` / `--no-pinch-depth` | off / (the default) | Experimental 3D pinch ratio / the 2D default; giving both is an error |
 | `--scroll-stable-frames`, `--scroll-dead-zone`, `--scroll-speed`, `--scroll-interval` | 6, 0.10, 8, 0.05 | Two-finger scroll tuning |
 | `--scroll-invert` | off | Hand up scrolls down |
@@ -303,6 +329,11 @@ Real hardware is covered by a separate manual checklist:
   scroll pose (index and middle clearly extended, ring and little clearly folded) can be hard to
   trigger or can trigger when you do not intend it. Drop accuracy depends on how your fingertip
   moves as you open your fingers.
+- **Right click** (`--right-click`, off by default) has never been tried on a webcam. It needs an
+  "OK sign" made with the middle finger and the other three fingers extended, which not every hand
+  does comfortably, and it will not trigger if the index fingertip is within 0.10 hand sizes of the
+  middle fingertip (the thumb could then be on either). Its false-activation rate was only checked
+  by replaying old recordings from one person.
 - **The 2D pinch** can mistake a thumb passing in front of the index finger for a touch; the
   confirmation frames, hysteresis, cooldown and re-arming rules exist to absorb that.
 - Scrolling into an **elevated (administrator) window** can silently do nothing: Windows blocks
@@ -328,6 +359,32 @@ Real hardware is covered by a separate manual checklist:
 | Console shows MediaPipe notices | They are hidden by default; `-v` shows them. Real errors are never hidden |
 | The mouse seems stuck pressed after a crash | Click the physical mouse button once |
 
+## Dynamic gesture research extension
+
+A separate research extension studies dynamic gestures (`swipe_left`, `swipe_right`,
+`circle_clockwise`, all in an open-palm pose) from recorded hand-landmark sequences. It has a
+recording tool, a versioned dataset format with validation, a session-grouped train / validation /
+test split frozen before training, a rule-based baseline, a small GRU (trained with optional
+PyTorch in a separate environment, run with NumPy only), and an offline evaluation that compares
+them on a held-out session and on a reserved continuous recording. It is **not connected to the
+mouse** and cannot send desktop input; the pointer, click, drag and scroll controls are unchanged.
+No result is claimed here: it is a small pilot on one person's recordings, and what the
+evaluation shows is in the report it writes.
+
+```
+python -m nocursor.dynamic collect --participant p01 --hand right
+python -m nocursor.dynamic summarize
+python -m nocursor.dynamic split
+python -m nocursor.dynamic evaluate --run <run>
+```
+
+NoCursor itself needs no new dependencies, and never PyTorch. Training uses a separate `.venv-ml`
+environment (git-ignored); the exact commands are in the guide. Recordings hold landmark numbers
+only (no video), identify people only by a pseudonym, and are kept in the git-ignored `datasets/`
+folder; trained models and reports go in the git-ignored `ml_runs/`. The gestures, recording
+protocol, file format, split method, training and evaluation commands, privacy notes and
+limitations are in **[docs/DYNAMIC_GESTURES.md](docs/DYNAMIC_GESTURES.md)**.
+
 ## Privacy
 
 - The camera is read frame by frame **in memory**; frames are processed and discarded. **No video
@@ -336,8 +393,12 @@ Real hardware is covered by a separate manual checklist:
 - Local files NoCursor can create: `calibration.local.json` (a rectangle and your camera index),
   `logs/nocursor.log` (only with `--log-file`; no frames or landmark data; your home folder is
   shown as `~`), and `benchmarks/*.json` (timings, configuration and package versions; a video
-  benchmark records only the clip's file name). All three are git-ignored.
-- Hand landmarks are held only for the current frame.
+  benchmark records only the clip's file name). All three are git-ignored, as is `datasets/`
+  (gesture research recordings, created only by the opt-in collection tool).
+- In the application itself, hand landmarks are held only for the current frame. The separate,
+  opt-in gesture-data collection tool (see below) is the one exception: when you run it, it
+  saves landmark numbers (never video) to `datasets/`, which is git-ignored. See
+  [docs/DYNAMIC_GESTURES.md](docs/DYNAMIC_GESTURES.md#privacy).
 
 ## Roadmap and contributing
 
@@ -357,4 +418,5 @@ Contributions are welcome in the spirit of the project: safe, honest, well teste
 | [docs/BENCHMARKING.md](docs/BENCHMARKING.md) | what is measured, how, results from executed runs |
 | [docs/MANUAL_TESTING.md](docs/MANUAL_TESTING.md) | the real-hardware checklist |
 | [docs/DEMO_PLAN.md](docs/DEMO_PLAN.md) | how to record a demonstration |
+| [docs/DYNAMIC_GESTURES.md](docs/DYNAMIC_GESTURES.md) | dynamic gesture research: recording protocol, dataset format, privacy, limitations |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | development workflow and ground rules |

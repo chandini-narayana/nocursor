@@ -23,6 +23,7 @@ a window's title bar for dragging. Do **not** practise dragging on files you car
 | Click | Pinch thumb + index, hold still ~0.2 s, release |
 | Drag | Pinch, then move your hand more than the drag threshold (30 px) while still pinched; release the pinch to drop |
 | Scroll | Peace-sign pose: index + middle extended, ring + little folded. Hold ~0.2 s, then move the hand up/down |
+| Right click (opt-in, `--right-click`) | OK sign with the middle finger: index, ring and little fingers extended, thumb touching the middle fingertip, hold ~0.2 s |
 | Pause / resume | `P` in the preview, or `Ctrl+Alt+P` anywhere (`--pause-key`) |
 | Calibrate | `C` in the preview, or launch with `--calibrate` |
 | Confirm calibration corner | `Space` or `Enter` |
@@ -277,6 +278,41 @@ See the README, "Install into a clean environment".
 - [ ] `python -m venv`, `pip install -r requirements.txt`, `pip install -e . --no-deps` succeed.
 - [ ] `pip list` shows `opencv-contrib-python` and **not** `opencv-python`.
 - [ ] `nocursor --version`, `nocursor --check`, `nocursor --download-model` work; `nocursor --dry-run` opens the preview window (OpenCV window support is available).
+
+## 18. Right click (opt-in: nothing here applies without `--right-click`)
+This gesture has **only been checked with synthetic hands and an offline replay of old recordings**.
+Treat every box below as an experiment. Use an empty Notepad window or a desktop you can safely
+right-click, and never right-click on files you care about. Do the dry-run parts first.
+
+### 18a. Off by default (live or dry-run, no flag)
+- [ ] Start without `--right-click`. Press `H`: the help panel has **no** right-click line.
+- [ ] Make the OK sign (thumb on middle fingertip, index/ring/little out) and hold it for 5 s: nothing happens except the pointer following your index finger.
+- [ ] `nocursor --print-settings` shows `right_click` as `off`.
+
+### 18b. Dry-run with the option on
+Run `.\.venv\Scripts\python -m nocursor --dry-run --diagnostics --right-click`.
+- [ ] `H` now lists the right-click gesture, and the diagnostics panel has a `right-click: thumb-middle ...` line.
+- [ ] Open your hand (thumb away) for a moment, then make the OK sign: the HUD shows `RIGHT-CLICK PENDING 1/5 ... 5/5 - not clicked yet`, the pointer freezes, then the terminal logs `dry-run: right click suppressed` once and a toast says `Right-clicked (simulated)`.
+- [ ] Keep holding the sign for 10 s: **no** further right clicks. Release and repeat: one more.
+- [ ] Hold the sign for under a second, then open early: no right click.
+- [ ] Start with the sign already made (never showing an open hand first): no right click until you open and repeat.
+- [ ] A normal thumb-index pinch still logs `mouse_down (simulated)` / `would be a click` exactly as before, and **no** right click.
+- [ ] Slide the thumb slowly from the index fingertip to the middle fingertip: at most one of the two ever fires, never both.
+
+### 18c. False-activation check (dry-run, about a minute each, expect 0 right clicks)
+- [ ] Point with the index finger, other fingers curled, thumb resting on the curled middle finger (your natural pointing hand). Turn and tilt it.
+- [ ] Idle with the hand relaxed and in view for 30 s, then move it around the frame.
+- [ ] Open palm, fist, loose fist, and the two-finger scroll pose with the thumb near the middle finger.
+- [ ] Rotate the OK sign about 40 degrees each way: it should still give exactly one right click per deliberate sign.
+
+### 18d. Live, once the dry-run is clean (`... -m nocursor --right-click`)
+- [ ] OK sign over the Notepad text area: one context menu opens. Close it with `Esc`.
+- [ ] Left click, drag and two-finger scroll still behave exactly as in sections 3, 7 and 8.
+- [ ] Pinch-and-drag, then make the OK sign while still dragging: no context menu appears and the drop is unaffected.
+- [ ] Right click, then pause with `P` before the menu closes: nothing further is sent.
+- [ ] Lose the hand (cover the camera) during the sign: no click, no stuck button; show an open hand and sign again to click.
+- [ ] Emergency stop (`Ctrl+Alt+Q`) while holding the sign: nothing is sent afterwards.
+- [ ] Note how comfortable the sign is, how often it fails to trigger, and anything that right-clicked by accident.
 
 ## Record your findings
 Note: camera model, resolution, FPS seen, any misclicks, accidental drags or scrolls, stuck-button incidents, calibration issues, and which `--smoothing`, `--pinch-threshold`, `--drag-start`, `--scroll-speed` values felt right. Report them back to the project owner.

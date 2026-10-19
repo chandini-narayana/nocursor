@@ -11,6 +11,7 @@ WRIST = 0
 THUMB_TIP = 4
 INDEX_TIP = 8
 MIDDLE_MCP = 9
+MIDDLE_TIP = 12
 NUM_LANDMARKS = 21
 
 # Skeleton edges for the preview overlay.

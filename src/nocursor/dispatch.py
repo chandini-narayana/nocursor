@@ -9,12 +9,13 @@ from __future__ import annotations
 from collections.abc import Iterable
 
 from nocursor.controller import SafeController
-from nocursor.interaction import Action, MouseDown, MouseUp, MoveTo, Scroll
+from nocursor.interaction import Action, MouseDown, MouseUp, MoveTo, RightClick, Scroll
 from nocursor.processor import GestureProcessor
 
 EVENT_PRESS = "press"
 EVENT_CLICK = "click"
 EVENT_DRAG_END = "drag_end"
+EVENT_RIGHT_CLICK = "right_click"
 
 
 def apply_actions(
@@ -45,4 +46,8 @@ def apply_actions(
             controller.scroll(action.clicks)
             if controller.events_accepted > before:
                 events.append(f"scroll {action.clicks:+d}")
+        elif isinstance(action, RightClick):
+            controller.right_click()
+            if controller.events_accepted > before:
+                events.append(EVENT_RIGHT_CLICK)
     return tuple(events)

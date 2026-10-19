@@ -36,7 +36,7 @@ from nocursor.controller import SafeController, ScreenSizeOnlyBackend
 from nocursor.dispatch import apply_actions
 from nocursor.emergency import EmergencyStop
 from nocursor.environment import collect_environment, missing_dependencies
-from nocursor.interaction import MouseDown, MouseUp, Scroll
+from nocursor.interaction import MouseDown, MouseUp, RightClick, Scroll
 from nocursor.metrics import P95_MIN_SAMPLES, P99_MIN_SAMPLES, format_ms
 from nocursor.paths import default_benchmark_dir
 from nocursor.processor import GestureProcessor
@@ -198,7 +198,7 @@ def _input_evidence(controller: SafeController) -> dict[str, Any]:
 
 
 def _discrete(gesture: Any) -> bool:
-    return any(isinstance(a, MouseDown | MouseUp | Scroll) for a in gesture.actions)
+    return any(isinstance(a, MouseDown | MouseUp | Scroll | RightClick) for a in gesture.actions)
 
 
 def _run_synthetic(

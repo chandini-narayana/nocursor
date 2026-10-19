@@ -11,9 +11,7 @@ import math
 from dataclasses import dataclass
 from enum import Enum
 
-from nocursor.models import INDEX_TIP, WRIST, HandObservation
-
-MIDDLE_TIP = 12
+from nocursor.models import INDEX_TIP, MIDDLE_TIP, WRIST, HandObservation
 
 # (knuckle, fingertip) landmark indices for the four non-thumb fingers.
 _FINGERS = {"index": (5, 8), "middle": (9, 12), "ring": (13, 16), "pinky": (17, 20)}
@@ -47,6 +45,22 @@ class FingerPose:
             and self.middle is FingerState.EXTENDED
             and self.ring is FingerState.FOLDED
             and self.pinky is FingerState.FOLDED
+        )
+
+    @property
+    def is_right_click_pose(self) -> bool:
+        """Index, ring and little finger clearly extended; the middle finger is not judged.
+
+        This is the pose the right-click pinch must be made in: an "OK sign" in which the thumb
+        meets the middle fingertip. Requiring the other three fingers out is what separates it
+        from the two natural resting shapes that also put the thumb against the middle finger:
+        pointing (the other fingers curled) and the two-finger scroll pose (ring and little
+        folded). The thumb is never judged.
+        """
+        return (
+            self.index is FingerState.EXTENDED
+            and self.ring is FingerState.EXTENDED
+            and self.pinky is FingerState.EXTENDED
         )
 
 

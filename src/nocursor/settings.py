@@ -15,7 +15,7 @@ SETTING_GROUPS: dict[str, tuple[str, ...]] = {
     "Pointer": ("active_margin", "smoothing"),
     "Pinch (click and drag)": (
         "pinch_use_depth", "pinch_threshold", "pinch_confirm_frames", "pinch_release_factor",
-        "pinch_release_frames", "click_cooldown_s", "drag_start_px",
+        "pinch_release_frames", "click_cooldown_s", "drag_start_px", "right_click",
     ),
     "Scrolling": (
         "scroll_stable_frames", "scroll_dead_zone", "scroll_speed", "scroll_interval_s",
